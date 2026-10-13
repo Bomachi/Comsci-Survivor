@@ -10,7 +10,6 @@ SPRITES_DIR = os.path.join(BASE_DIR, "assets", "sprites")
 from stages.stage1 import Stage1
 from upgrades import UPGRADE_POOL
 
-
 SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 700
 FPS = 60
@@ -49,10 +48,16 @@ class Player:
         self.exp = 0
         self.exp_to_next = 5
         self.pending_level_ups = 0
+        
         self.shoot_cooldown = 60
         self.shoot_timer = 0
         self.damage = 25
         self.magnet_range = 60
+
+        self.has_book_weapon = False
+        self.book_cooldown = 75
+        self.book_timer = 0
+        self.book_damage = 45
 
     def handle_input(self):
         keys = pygame.key.get_pressed()
@@ -74,12 +79,19 @@ class Player:
         self.x += dx * self.speed
         self.y += dy * self.speed
 
-    def update_weapon(self, enemies, missiles):
+    def update_weapon(self, enemies, missiles, books, book_sprite=None):
         self.shoot_timer -= 1
         if self.shoot_timer <= 0 and enemies:
             nearest = min(enemies, key=lambda e: math.hypot(e.x - self.x, e.y - self.y))
             missiles.append(Missile(self.x, self.y, nearest.x, nearest.y, self.damage))
             self.shoot_timer = self.shoot_cooldown
+
+        if self.has_book_weapon:
+            self.book_timer -= 1
+            if self.book_timer <= 0 and enemies:
+                nearest = min(enemies, key=lambda e: math.hypot(e.x - self.x, e.y - self.y))
+                books.append(BookProjectile(self.x, self.y, nearest.x, nearest.y, self.book_damage, book_sprite))
+                self.book_timer = self.book_cooldown
 
     def add_exp(self, amount):
         self.exp += amount
@@ -182,6 +194,37 @@ class Missile:
         pygame.draw.circle(surface, COLOR_MISSILE, (sx, sy), self.radius)
 
 
+class BookProjectile:
+    def __init__(self, x, y, target_x, target_y, damage, sprite=None):
+        self.x = x
+        self.y = y
+        self.damage = damage
+        self.speed = 8.5
+        self.radius = 12
+        self.lifetime = 70
+        self.sprite = sprite
+
+        dx = target_x - x
+        dy = target_y - y
+        dist = math.hypot(dx, dy) or 1
+        self.vx = (dx / dist) * self.speed
+        self.vy = (dy / dist) * self.speed
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.lifetime -= 1
+
+    def draw(self, surface, cam_x, cam_y):
+        sx = int(self.x - cam_x)
+        sy = int(self.y - cam_y)
+        if self.sprite:
+            rect = self.sprite.get_rect(center=(sx, sy))
+            surface.blit(self.sprite, rect)
+        else:
+            pygame.draw.rect(surface, (160, 30, 40), (sx - 8, sy - 8, 16, 16))
+
+
 class Gem:
     def __init__(self, x, y, value=1):
         self.x = x
@@ -218,8 +261,9 @@ class Game:
         self.TA_sprite = load_sprite("TA.png", (36, 36))
         self.proffessor_sprite = load_sprite("proffessor.png", (40, 40))
         self.skel_sprite = load_sprite("rector.png", (44, 44))
+        
+        self.book_sprite = load_sprite("card_book.png", (28, 28))
 
-        # โหลดกรอบการ์ด UI
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
 
@@ -230,6 +274,7 @@ class Game:
         self.player = Player(0, 0, sprite=self.player_sprite)
         self.enemies = []
         self.missiles = []
+        self.books = []
         self.gems = []
         self.camera_x = 0
         self.camera_y = 0
@@ -310,7 +355,7 @@ class Game:
             self.timer_seconds += 1
 
         self.player.handle_input()
-        self.player.update_weapon(self.enemies, self.missiles)
+        self.player.update_weapon(self.enemies, self.missiles, self.books, self.book_sprite)
 
         self.camera_x += (self.player.x - SCREEN_WIDTH // 2 - self.camera_x) * 0.1
         self.camera_y += (self.player.y - SCREEN_HEIGHT // 2 - self.camera_y) * 0.1
@@ -330,6 +375,18 @@ class Game:
                     e.hp -= m.damage
                     if m in self.missiles:
                         self.missiles.remove(m)
+                    break
+
+        for b in self.books[:]:
+            b.update()
+            if b.lifetime <= 0:
+                self.books.remove(b)
+                continue
+            for e in self.enemies:
+                if math.hypot(e.x - b.x, e.y - b.y) < e.radius + b.radius:
+                    e.hp -= b.damage
+                    if b in self.books:
+                        self.books.remove(b)
                     break
 
         for e in self.enemies[:]:
@@ -386,11 +443,9 @@ class Game:
         self.screen.blit(kill_txt, (SCREEN_WIDTH - kill_txt.get_width() - 15, bar_h + 10))
 
     def draw_wrapped_text(self, text, font, color, max_width, start_x, start_y, line_spacing=18):
-        """ฟังก์ชันช่วยตัดคำและจัดกึ่งกลางข้อความให้อยู่ภายในความกว้างที่กำหนด"""
         words = text.split(" ")
         lines = []
         current_line = []
-
         for word in words:
             test_line = " ".join(current_line + [word])
             if font.size(test_line)[0] <= max_width:
@@ -401,7 +456,6 @@ class Game:
                 current_line = [word]
         if current_line:
             lines.append(" ".join(current_line))
-
         y = start_y
         for line in lines:
             line_surf = font.render(line, True, color)
@@ -424,7 +478,6 @@ class Game:
         for idx, (upg, rect) in enumerate(zip(self.current_upgrades, self.upgrade_rects)):
             is_hover = rect.collidepoint(mouse_pos)
 
-            # 1. วาดกรอบการ์ดรูปภาพ
             frame_img = self.card_frame_hover if (is_hover and self.card_frame_hover) else self.card_frame
             if frame_img:
                 self.screen.blit(frame_img, rect.topleft)
@@ -432,22 +485,18 @@ class Game:
                 pygame.draw.rect(self.screen, COLOR_CARD_BG, rect, border_radius=12)
                 pygame.draw.rect(self.screen, COLOR_GOLD if is_hover else COLOR_CARD_BORDER, rect, width=3, border_radius=12)
 
-            # 2. ชื่อการ์ด (Title - แสดงไว้ตรงกลางช่อง Header ด้านบนของกรอบการ์ด)
             name_surf = self.font.render(upg["title"], True, COLOR_GOLD if is_hover else COLOR_WHITE)
             self.screen.blit(name_surf, (rect.centerx - name_surf.get_width() // 2, rect.y + 22))
 
-            # 3. วาดไอคอนการ์ดตรงกลาง
             icon_filename = upg.get("icon", "card_damage.png")
             card_icon = load_sprite(icon_filename, (48, 48))
             if card_icon:
                 icon_rect = card_icon.get_rect(center=(rect.centerx, rect.y + 100))
                 self.screen.blit(card_icon, icon_rect)
 
-            # 4. ค่าบัฟหลัก (Desc)
             desc_surf = self.font.render(upg["desc"], True, COLOR_HP_GREEN)
             self.screen.blit(desc_surf, (rect.centerx - desc_surf.get_width() // 2, rect.y + 162))
 
-            # 5. รายละเอียดคำอธิบาย (Detail - ตัดคำอัตโนมัติ ไม่ล้นกรอบล่าง)
             self.draw_wrapped_text(
                 text=upg["detail"],
                 font=self.small_font,
@@ -465,6 +514,8 @@ class Game:
             g.draw(self.screen, self.camera_x, self.camera_y)
         for m in self.missiles:
             m.draw(self.screen, self.camera_x, self.camera_y)
+        for b in self.books:
+            b.draw(self.screen, self.camera_x, self.camera_y)
         for e in self.enemies:
             e.draw(self.screen, self.camera_x, self.camera_y)
 
