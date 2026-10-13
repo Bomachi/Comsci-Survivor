@@ -8,6 +8,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPRITES_DIR = os.path.join(BASE_DIR, "assets", "sprites")
 
 from stages.stage1 import Stage1
+from upgrades import UPGRADE_POOL
+
 
 SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 700
@@ -19,6 +21,9 @@ COLOR_HP_RED = (231, 76, 60)
 COLOR_EXP = (52, 152, 219)
 COLOR_MISSILE = (231, 76, 60)
 COLOR_GOLD = (255, 215, 0)
+COLOR_CARD_BG = (35, 30, 50)
+COLOR_CARD_BORDER = (100, 90, 130)
+
 
 def load_sprite(filename: str, size=None):
     path = os.path.join(SPRITES_DIR, filename)
@@ -28,6 +33,7 @@ def load_sprite(filename: str, size=None):
             surf = pygame.transform.scale(surf, size)
         return surf
     return None
+
 
 class Player:
     def __init__(self, x, y, sprite=None):
@@ -39,14 +45,14 @@ class Player:
         self.hp = 100
         self.facing_right = True
         self.sprite = sprite
-
         self.level = 1
         self.exp = 0
         self.exp_to_next = 5
-
+        self.pending_level_ups = 0
         self.shoot_cooldown = 60
         self.shoot_timer = 0
         self.damage = 25
+        self.magnet_range = 60
 
     def handle_input(self):
         keys = pygame.key.get_pressed()
@@ -77,16 +83,18 @@ class Player:
 
     def add_exp(self, amount):
         self.exp += amount
-        if self.exp >= self.exp_to_next:
+        leveled_up = False
+        while self.exp >= self.exp_to_next:
             self.exp -= self.exp_to_next
             self.level += 1
             self.exp_to_next = int(self.exp_to_next * 1.35) + 3
-            self.hp = min(self.max_hp, self.hp + 20)
+            self.pending_level_ups += 1
+            leveled_up = True
+        return leveled_up
 
     def draw(self, surface, cam_x, cam_y):
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
-
         if self.sprite:
             img = self.sprite if self.facing_right else pygame.transform.flip(self.sprite, True, False)
             rect = img.get_rect(center=(sx, sy))
@@ -140,13 +148,13 @@ class Enemy:
     def draw(self, surface, cam_x, cam_y):
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
-
         if self.sprite:
             img = self.sprite if self.facing_right else pygame.transform.flip(self.sprite, True, False)
             rect = img.get_rect(center=(sx, sy))
             surface.blit(img, rect)
         else:
             pygame.draw.circle(surface, self.color, (sx, sy), self.radius)
+
 
 class Missile:
     def __init__(self, x, y, target_x, target_y, damage):
@@ -191,21 +199,29 @@ class Game:
     def __init__(self):
         pygame.init()
         pygame.font.init()
-
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Classroom Survivor - Pygame Edition")
         self.clock = pygame.time.Clock()
 
-
         font_path = os.path.join(BASE_DIR, "assets", "fonts", "Minecraft.ttf")
-        self.font = pygame.font.Font(font_path, 20)
-        self.title_font = pygame.font.Font(font_path, 36)
+        if os.path.exists(font_path):
+            self.font = pygame.font.Font(font_path, 18)
+            self.small_font = pygame.font.Font(font_path, 13)
+            self.title_font = pygame.font.Font(font_path, 36)
+        else:
+            self.font = pygame.font.SysFont("tahoma", 18)
+            self.small_font = pygame.font.SysFont("tahoma", 13)
+            self.title_font = pygame.font.SysFont("tahoma", 36)
 
         self.stage1_tile = load_sprite("stage1_tile.png", (64, 64))
         self.player_sprite = load_sprite("player.png", (48, 48))
         self.TA_sprite = load_sprite("TA.png", (36, 36))
         self.proffessor_sprite = load_sprite("proffessor.png", (40, 40))
         self.skel_sprite = load_sprite("rector.png", (44, 44))
+
+        # โหลดกรอบการ์ด UI
+        self.card_frame = load_sprite("card_frame.png", (240, 300))
+        self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
 
         self.current_stage = Stage1()
         self.reset_game()
@@ -215,14 +231,17 @@ class Game:
         self.enemies = []
         self.missiles = []
         self.gems = []
-
         self.camera_x = 0
         self.camera_y = 0
-
         self.spawn_timer = 0
         self.timer_seconds = 0
         self.frame_count = 0
         self.kill_count = 0
+
+        self.is_level_up = False
+        self.current_upgrades = []
+        self.upgrade_rects = []
+
         self.is_game_over = False
         self.is_running = True
 
@@ -231,7 +250,6 @@ class Game:
         dist = random.uniform(600, 750)
         ex = self.player.x + math.cos(angle) * dist
         ey = self.player.y + math.sin(angle) * dist
-
         etype = self.current_stage.get_enemy_spawn_type(self.timer_seconds)
 
         spr = self.TA_sprite
@@ -242,6 +260,31 @@ class Game:
 
         self.enemies.append(Enemy(ex, ey, etype, sprite=spr))
 
+    def trigger_level_up(self):
+        self.is_level_up = True
+        num_options = min(3, len(UPGRADE_POOL))
+        self.current_upgrades = random.sample(UPGRADE_POOL, num_options)
+
+        card_w, card_h = 240, 300
+        gap = 25
+        total_w = (num_options * card_w) + ((num_options - 1) * gap)
+        start_x = (SCREEN_WIDTH - total_w) // 2
+        card_y = 210
+
+        self.upgrade_rects = []
+        for i in range(num_options):
+            cx = start_x + i * (card_w + gap)
+            self.upgrade_rects.append(pygame.Rect(cx, card_y, card_w, card_h))
+
+    def apply_upgrade(self, upgrade_data):
+        upgrade_data["apply"](self.player)
+        self.player.pending_level_ups -= 1
+
+        if self.player.pending_level_ups > 0:
+            self.trigger_level_up()
+        else:
+            self.is_level_up = False
+
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -251,9 +294,15 @@ class Game:
                     self.is_running = False
                 elif event.key == pygame.K_r and self.is_game_over:
                     self.reset_game()
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
+                mx, my = pygame.mouse.get_pos()
+                for idx, rect in enumerate(self.upgrade_rects):
+                    if rect.collidepoint(mx, my):
+                        self.apply_upgrade(self.current_upgrades[idx])
+                        break
 
     def update(self):
-        if self.is_game_over:
+        if self.is_game_over or self.is_level_up:
             return
 
         self.frame_count += 1
@@ -276,7 +325,6 @@ class Game:
             if m.lifetime <= 0:
                 self.missiles.remove(m)
                 continue
-
             for e in self.enemies:
                 if math.hypot(e.x - m.x, e.y - m.y) < e.radius + m.radius:
                     e.hp -= m.damage
@@ -286,25 +334,23 @@ class Game:
 
         for e in self.enemies[:]:
             e.update(self.player.x, self.player.y)
-
             if math.hypot(e.x - self.player.x, e.y - self.player.y) < e.radius + self.player.radius:
                 self.player.hp -= e.damage * 0.05
                 if self.player.hp <= 0:
                     self.player.hp = 0
                     self.is_game_over = True
-
             if e.hp <= 0:
                 self.gems.append(Gem(e.x, e.y))
                 self.kill_count += 1
                 self.enemies.remove(e)
 
         for g in self.gems[:]:
-            if math.hypot(g.x - self.player.x, g.y - self.player.y) < self.player.radius + 60:
+            if math.hypot(g.x - self.player.x, g.y - self.player.y) < self.player.radius + self.player.magnet_range:
                 g.x += (self.player.x - g.x) * 0.15
                 g.y += (self.player.y - g.y) * 0.15
-
             if math.hypot(g.x - self.player.x, g.y - self.player.y) < self.player.radius + g.radius:
-                self.player.add_exp(g.value)
+                if self.player.add_exp(g.value):
+                    self.trigger_level_up()
                 self.gems.remove(g)
 
     def draw_background(self):
@@ -314,14 +360,13 @@ class Game:
             end_col = int((self.camera_x + SCREEN_WIDTH) // tile_w) + 2
             start_row = int(self.camera_y // tile_h) - 1
             end_row = int((self.camera_y + SCREEN_HEIGHT) // tile_h) + 2
-
             for c in range(start_col, end_col):
                 for r in range(start_row, end_row):
                     sx = c * tile_w - int(self.camera_x)
                     sy = r * tile_h - int(self.camera_y)
                     self.screen.blit(self.stage1_tile, (sx, sy))
         else:
-            self.screen.fill(self.current_stage.bg_color)
+            self.screen.fill((24, 20, 34))
 
     def draw_hud(self):
         bar_h = 12
@@ -340,30 +385,100 @@ class Game:
         kill_txt = self.font.render(f"KILLS: {self.kill_count}", True, (240, 90, 90))
         self.screen.blit(kill_txt, (SCREEN_WIDTH - kill_txt.get_width() - 15, bar_h + 10))
 
+    def draw_wrapped_text(self, text, font, color, max_width, start_x, start_y, line_spacing=18):
+        """ฟังก์ชันช่วยตัดคำและจัดกึ่งกลางข้อความให้อยู่ภายในความกว้างที่กำหนด"""
+        words = text.split(" ")
+        lines = []
+        current_line = []
+
+        for word in words:
+            test_line = " ".join(current_line + [word])
+            if font.size(test_line)[0] <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [word]
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        y = start_y
+        for line in lines:
+            line_surf = font.render(line, True, color)
+            self.screen.blit(line_surf, (start_x - line_surf.get_width() // 2, y))
+            y += line_spacing
+
+    def draw_level_up_modal(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((12, 10, 22, 210))
+        self.screen.blit(overlay, (0, 0))
+
+        title = self.title_font.render("LEVEL UP!", True, COLOR_GOLD)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 80))
+
+        subtitle = self.font.render("Choose an Upgrade", True, COLOR_WHITE)
+        self.screen.blit(subtitle, (SCREEN_WIDTH // 2 - subtitle.get_width() // 2, 135))
+
+        mouse_pos = pygame.mouse.get_pos()
+
+        for idx, (upg, rect) in enumerate(zip(self.current_upgrades, self.upgrade_rects)):
+            is_hover = rect.collidepoint(mouse_pos)
+
+            # 1. วาดกรอบการ์ดรูปภาพ
+            frame_img = self.card_frame_hover if (is_hover and self.card_frame_hover) else self.card_frame
+            if frame_img:
+                self.screen.blit(frame_img, rect.topleft)
+            else:
+                pygame.draw.rect(self.screen, COLOR_CARD_BG, rect, border_radius=12)
+                pygame.draw.rect(self.screen, COLOR_GOLD if is_hover else COLOR_CARD_BORDER, rect, width=3, border_radius=12)
+
+            # 2. ชื่อการ์ด (Title - แสดงไว้ตรงกลางช่อง Header ด้านบนของกรอบการ์ด)
+            name_surf = self.font.render(upg["title"], True, COLOR_GOLD if is_hover else COLOR_WHITE)
+            self.screen.blit(name_surf, (rect.centerx - name_surf.get_width() // 2, rect.y + 22))
+
+            # 3. วาดไอคอนการ์ดตรงกลาง
+            icon_filename = upg.get("icon", "card_damage.png")
+            card_icon = load_sprite(icon_filename, (48, 48))
+            if card_icon:
+                icon_rect = card_icon.get_rect(center=(rect.centerx, rect.y + 100))
+                self.screen.blit(card_icon, icon_rect)
+
+            # 4. ค่าบัฟหลัก (Desc)
+            desc_surf = self.font.render(upg["desc"], True, COLOR_HP_GREEN)
+            self.screen.blit(desc_surf, (rect.centerx - desc_surf.get_width() // 2, rect.y + 162))
+
+            # 5. รายละเอียดคำอธิบาย (Detail - ตัดคำอัตโนมัติ ไม่ล้นกรอบล่าง)
+            self.draw_wrapped_text(
+                text=upg["detail"],
+                font=self.small_font,
+                color=(200, 200, 210),
+                max_width=200,
+                start_x=rect.centerx,
+                start_y=rect.y + 208,
+                line_spacing=18
+            )
+
     def render(self):
         self.draw_background()
 
         for g in self.gems:
             g.draw(self.screen, self.camera_x, self.camera_y)
-
         for m in self.missiles:
             m.draw(self.screen, self.camera_x, self.camera_y)
-
         for e in self.enemies:
             e.draw(self.screen, self.camera_x, self.camera_y)
 
         self.player.draw(self.screen, self.camera_x, self.camera_y)
-
         self.draw_hud()
 
-        if self.is_game_over:
+        if self.is_level_up:
+            self.draw_level_up_modal()
+        elif self.is_game_over:
             overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             overlay.fill((40, 10, 15, 200))
             self.screen.blit(overlay, (0, 0))
-
             over_txt = self.title_font.render("GAME OVER", True, (255, 70, 70))
             self.screen.blit(over_txt, (SCREEN_WIDTH // 2 - over_txt.get_width() // 2, 250))
-
             restart_txt = self.font.render("Press [ R ] to Restart | Press [ ESC ] to Quit", True, COLOR_GOLD)
             self.screen.blit(restart_txt, (SCREEN_WIDTH // 2 - restart_txt.get_width() // 2, 330))
 
@@ -375,7 +490,6 @@ class Game:
             self.update()
             self.render()
             self.clock.tick(FPS)
-
         pygame.quit()
         sys.exit()
 
