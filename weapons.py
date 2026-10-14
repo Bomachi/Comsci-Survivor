@@ -2,6 +2,8 @@
 import math
 import pygame
 
+from item_art import draw_item
+
 MAX_WEAPONS = 3
 MAX_LEVEL = 5
 MAX_PROJECTILES = 180
@@ -16,27 +18,7 @@ WEAPONS = {
 
 
 def draw_icon(surface, kind, center, size=16):
-    x, y = map(int, center)
-    color = WEAPONS[kind][2]
-    if kind == "enter":
-        pygame.draw.rect(surface, color, (x-size, y-size//2, size*2, size), border_radius=3)
-        pygame.draw.lines(surface, (25, 35, 45), False, [(x+5,y-4),(x+5,y+2),(x-6,y+2),(x-2,y-2)], 2)
-    elif kind == "book":
-        pygame.draw.rect(surface, color, (x-size//2,y-size//2,size,size), border_radius=2)
-        pygame.draw.line(surface, (80, 50, 30), (x,y-size//2),(x,y+size//2),2)
-    elif kind == "lan":
-        pygame.draw.lines(surface, color, False, [(x-size,y+5),(x-5,y-5),(x+5,y+5),(x+size,y-5)],3)
-        pygame.draw.rect(surface,color,(x+size-4,y-9,8,8))
-    elif kind == "bug":
-        pygame.draw.circle(surface,color,(x,y),size//2)
-        for dy in (-5,0,5):
-            pygame.draw.line(surface,color,(x-size,y+dy*2),(x+size,y+dy*2),2)
-    elif kind == "wifi":
-        for radius in (size//3, size*2//3, size):
-            pygame.draw.circle(surface,color,(x,y),max(1,radius),2)
-    else:
-        for side in (-1,1):
-            pygame.draw.lines(surface,color,False,[(x+side*size,y-size//2),(x+side*size//2,y-size//2),(x+side*size//2,y-2),(x+side*3,y),(x+side*size//2,y+2),(x+side*size//2,y+size//2),(x+side*size,y+size//2)],2)
+    draw_item(surface, kind, center, size * 2)
 
 
 class Projectile:
@@ -93,7 +75,9 @@ class Projectile:
                 break
 
     def draw(self, surface, cam_x, cam_y):
-        draw_icon(surface,self.kind,(self.x-cam_x,self.y-cam_y),10)
+        size = {"enter": 30, "bug": 26, "recursion": 24}[self.kind]
+        angle = -math.degrees(self.angle)-90 if self.kind == "bug" else 0
+        draw_item(surface, self.kind, (self.x-cam_x, self.y-cam_y), size, angle)
 
 
 class Effect:
@@ -102,13 +86,34 @@ class Effect:
         self.angle,self.width,self.life = angle,width,0.24
 
     def draw(self, surface, cam_x, cam_y):
-        center = (round(self.x-cam_x),round(self.y-cam_y))
+        center = (round(self.x-cam_x), round(self.y-cam_y))
         color = WEAPONS[self.kind][2]
+        progress = max(0, min(1, 1-self.life/0.24))
         if self.kind == "lan":
-            end = (round(center[0]+math.cos(self.angle)*self.radius),round(center[1]+math.sin(self.angle)*self.radius))
-            pygame.draw.line(surface,color,center,end,max(2,round(self.width)))
+            # A curved cable with an outlined jacket, highlight and visible plug.
+            ux, uy = math.cos(self.angle), math.sin(self.angle)
+            points = []
+            for index in range(13):
+                t = index/12
+                bend = math.sin(t*math.pi)*self.width*(1-progress)*0.6
+                points.append((round(center[0]+ux*t*self.radius-uy*bend),
+                               round(center[1]+uy*t*self.radius+ux*bend)))
+            pygame.draw.lines(surface, (20, 19, 45), False, points, 7)
+            pygame.draw.lines(surface, color, False, points, 4)
+            pygame.draw.aalines(surface, (190, 255, 225), False, points)
+            draw_item(surface, "lan", points[-1], 26)
         else:
-            pygame.draw.circle(surface,color,center,max(1,round(self.radius*(1-self.life/0.3))),3)
+            extent = math.ceil(self.radius)+8
+            halo = pygame.Surface((extent*2, extent*2), pygame.SRCALPHA)
+            origin = (extent, extent)
+            radius = max(2, round(self.radius*(0.2+progress*0.8)))
+            alpha = round(210*(1-progress))
+            pygame.draw.circle(halo, (*color, alpha//5), origin, radius)
+            pygame.draw.circle(halo, (*color, alpha), origin, radius, 3)
+            pygame.draw.circle(halo, (240, 245, 255, alpha//2), origin, max(2, radius-4), 1)
+            if self.kind == "wifi":
+                pygame.draw.circle(halo, (*color, alpha//2), origin, max(2, round(radius*0.65)), 2)
+            surface.blit(halo, (center[0]-extent, center[1]-extent))
 
 
 class WeaponSystem:
@@ -193,14 +198,11 @@ class WeaponSystem:
         self.projectiles = [p for p in self.projectiles if p.life > 0]
         self.projectiles.extend(additions[:max(0,MAX_PROJECTILES-len(self.projectiles))])
 
-    def draw(self, surface, player, cam_x, cam_y, book_sprite=None):
+    def draw(self, surface, player, cam_x, cam_y):
         for projectile in self.projectiles:
             projectile.draw(surface,cam_x,cam_y)
         for effect in self.effects:
             effect.draw(surface,cam_x,cam_y)
         for x,y in self.book_positions(player):
             center = (round(x-cam_x),round(y-cam_y))
-            if book_sprite:
-                surface.blit(book_sprite,book_sprite.get_rect(center=center))
-            else:
-                draw_icon(surface,"book",center)
+            draw_item(surface, "book", center, 32)

@@ -37,8 +37,10 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   Collected EXP grants level-up choices. Multiple earned choices are queued.
 - Pickups use no weapon slots. Gameplay, coffee and combat timers pause while
   the upgrade menu is open. Restart clears the loadout and buffs.
-- Values are initial balancing values; the new weapon icons are drawn with
-  Pygame, with the existing book sprite used for orbiting books.
+- Values are initial balancing values. Weapon and pickup artwork uses transparent
+  PNG sprites in `assets/sprites/items/`, shared by cards, the HUD and combat.
+  The Enter key is the user-supplied image; the matching sprites were generated
+  with the built-in image generation tool. Prompts are saved in that folder.
 
 ## Team integration
 
@@ -46,6 +48,9 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   Use `player.weapons.upgrade(id)` to enforce slot/level limits.
 - `upgrades.py`: eligible cards and upgrade application.
 - `main.py`: pickups, player/enemy updates, game loop and UI.
+- `item_art.py`: loads artwork relative to the project, preserves aspect ratio,
+  and caches scaled images and rotations. Replace the corresponding PNG in
+  `assets/sprites/items/` and restart the game to change an icon.
 - All movement and combat timers use seconds (`dt`), with a 0.1-second clamp
   for long window stalls. Contact damage has a 0.75-second grace period.
 - Keep the same `Player` when adding stage transitions to preserve EXP, level

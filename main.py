@@ -10,6 +10,7 @@ SPRITES_DIR = os.path.join(BASE_DIR, "assets", "sprites")
 from stages.stage1 import Stage1
 from upgrades import available_upgrades, apply_upgrade
 from weapons import WeaponSystem, WEAPONS, draw_icon
+from item_art import draw_item
 
 SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 700
@@ -163,14 +164,11 @@ class Gem:
     def draw(self, surface, cam_x, cam_y):
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
-        pygame.draw.circle(surface, COLOR_EXP, (sx, sy), self.radius)
+        draw_item(surface, "exp", (sx, sy), 16)
 
 
 def draw_coffee(surface, center):
-    x, y = map(int, center)
-    pygame.draw.rect(surface, (245, 220, 180), (x-8, y-8, 16, 18), border_radius=3)
-    pygame.draw.circle(surface, (245, 220, 180), (x+10, y), 6, 3)
-    pygame.draw.line(surface, (110, 65, 40), (x-5, y-5), (x+5, y-5), 3)
+    draw_item(surface, "coffee", center, 28)
 
 
 class Coffee:
@@ -207,7 +205,6 @@ class Game:
         self.professor_sprite = load_sprite("professor.png", (40, 40))
         self.skel_sprite = load_sprite("rector.png", (44, 44))
         
-        self.book_sprite = load_sprite("card_book.png", (28, 28))
 
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
@@ -394,7 +391,7 @@ class Game:
         for index, (kind, level) in enumerate(self.player.weapons.levels.items()):
             x = 15 + index*190
             pygame.draw.rect(self.screen, (28, 30, 45), (x, 55, 180, 36), border_radius=6)
-            draw_icon(self.screen, kind, (x+21, 73), 12)
+            draw_icon(self.screen, kind, (x+21, 73), 15)
             label = self.small_font.render(f"{WEAPONS[kind][0]} L{level}", True, COLOR_WHITE)
             self.screen.blit(label, (x+42, 66))
         if self.player.coffee_remaining > 0:
@@ -452,7 +449,7 @@ class Game:
             self.screen.blit(name_surf, (rect.centerx - name_surf.get_width() // 2, rect.y + 22))
 
             if upg["id"] in WEAPONS:
-                draw_icon(self.screen, upg["id"], (rect.centerx, rect.y+100), 24)
+                draw_icon(self.screen, upg["id"], (rect.centerx, rect.y+100), 32)
             else:
                 pygame.draw.line(self.screen, COLOR_HP_GREEN, (rect.centerx-15, rect.y+100), (rect.centerx+15, rect.y+100), 7)
                 pygame.draw.line(self.screen, COLOR_HP_GREEN, (rect.centerx, rect.y+85), (rect.centerx, rect.y+115), 7)
@@ -480,7 +477,7 @@ class Game:
         for e in self.enemies:
             e.draw(self.screen, self.camera_x, self.camera_y)
 
-        self.player.weapons.draw(self.screen, self.player, self.camera_x, self.camera_y, self.book_sprite)
+        self.player.weapons.draw(self.screen, self.player, self.camera_x, self.camera_y)
         self.player.draw(self.screen, self.camera_x, self.camera_y)
         self.draw_hud()
 
