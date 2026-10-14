@@ -13,6 +13,6 @@ class Stage1(BaseStage):
         if elapsed_seconds < 60:
             return "TA"
         elif elapsed_seconds < 120:
-            return "proffessor" if random.random() < 0.5 else "bat"
+            return "professor" if random.random() < 0.5 else "TA"
         else:
             return "rector"
