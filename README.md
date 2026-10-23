@@ -35,6 +35,15 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   The HUD shows remaining time; uncollected cups expire after 20 seconds.
 - **EXP:** each enemy drops a gem; nearby gems move toward the player.
   Collected EXP grants level-up choices. Multiple earned choices are queued.
+- **Supply crates / กล่องอาหาร:** crates are scattered throughout the map, with
+  the first visible to the right of the starting position. Touch a crate and
+  stand still for **5 continuous gameplay seconds** to open it. Moving or leaving
+  resets progress. Enemies keep attacking; the upgrade menu pauses the timer.
+  A progress bar appears above the crate. Each crate opens once per run and drops
+  food beside it. Walk over food to restore **30 HP**, capped at maximum HP.
+  Food stays on the ground when HP is full and does not expire or use a weapon
+  slot. Restart creates fresh crates and clears food. The user-supplied food image
+  is stored unchanged in `assets/sprites/items/food.png`.
 - Pickups use no weapon slots. Gameplay, coffee and combat timers pause while
   the upgrade menu is open. Restart clears the loadout and buffs.
 - Values are initial balancing values. Weapon and pickup artwork uses transparent
@@ -48,6 +57,7 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   Use `player.weapons.upgrade(id)` to enforce slot/level limits.
 - `upgrades.py`: eligible cards and upgrade application.
 - `main.py`: pickups, player/enemy updates, game loop and UI.
+- `supplies.py`: map crate placement, continuous opening timer and healing food.
 - `item_art.py`: loads artwork relative to the project, preserves aspect ratio,
   and caches scaled images and rotations. Replace the corresponding PNG in
   `assets/sprites/items/` and restart the game to change an icon.

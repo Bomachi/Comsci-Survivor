@@ -11,6 +11,7 @@ from stages.stage1 import Stage1
 from upgrades import available_upgrades, apply_upgrade
 from weapons import WeaponSystem, WEAPONS, draw_icon
 from item_art import draw_item
+from supplies import Supplies
 
 SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 700
@@ -217,6 +218,8 @@ class Game:
         self.enemies = []
         self.coffees = []
         self.gems = []
+        self.supplies = Supplies(random.getrandbits(32))
+        self.supplies.populate(self.player.x, self.player.y)
         self.camera_x = self.player.x - SCREEN_WIDTH // 2
         self.camera_y = self.player.y - SCREEN_HEIGHT // 2
         self.spawn_timer = 0
@@ -304,7 +307,9 @@ class Game:
         self.timer_seconds = int(self.elapsed_seconds)
         self.player.coffee_remaining = max(0, self.player.coffee_remaining-dt)
         self.player.hurt_remaining = max(0, self.player.hurt_remaining-dt)
+        previous_position = (self.player.x, self.player.y)
         self.player.handle_input(dt)
+        moved = math.hypot(self.player.x - previous_position[0], self.player.y - previous_position[1]) > 1e-6
 
         smoothing = 1 - 0.9 ** (dt*60)
         self.camera_x += (self.player.x - SCREEN_WIDTH//2 - self.camera_x)*smoothing
@@ -337,6 +342,7 @@ class Game:
                     self.is_game_over = True
                     return
 
+        self.supplies.update(dt, self.player, moved)
         for coffee in self.coffees[:]:
             coffee.life -= dt
             if math.hypot(coffee.x-self.player.x, coffee.y-self.player.y) < coffee.radius+self.player.radius:
@@ -469,6 +475,7 @@ class Game:
 
     def render(self):
         self.draw_background()
+        self.supplies.draw(self.screen, self.camera_x, self.camera_y, self.small_font, self.player)
 
         for g in self.gems:
             g.draw(self.screen, self.camera_x, self.camera_y)
