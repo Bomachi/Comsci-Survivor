@@ -86,7 +86,7 @@ class Supplies:
                 # Drop beside the crate so the player sees and walks over the food.
                 self.foods.append(Food(crate.x + 64, crate.y))
         for food in self.foods[:]:
-            if player.hp < player.max_hp and math.hypot(food.x - player.x, food.y - player.y) <= food.radius + player.radius:
+            if math.hypot(food.x - player.x, food.y - player.y) <= food.radius + player.radius:
                 player.hp = min(player.max_hp, player.hp + FOOD_HEAL)
                 self.foods.remove(food)
 
