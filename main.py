@@ -2,6 +2,7 @@ import os
 import sys
 import math
 import random
+from enum import Enum
 import pygame
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,13 @@ COLOR_CARD_BG = (35, 30, 50)
 COLOR_CARD_BORDER = (100, 90, 130)
 
 
+class GameState(Enum):
+    MAIN_MENU = 1
+    PLAYING = 2
+    PAUSED = 3
+    GAME_OVER = 4
+
+
 def load_sprite(filename: str, size=None):
     path = os.path.join(SPRITES_DIR, filename)
     if os.path.exists(path):
@@ -34,6 +42,97 @@ def load_sprite(filename: str, size=None):
             surf = pygame.transform.scale(surf, size)
         return surf
     return None
+
+
+class Button:
+    def __init__(self, x, y, width, height, text="", font=None, bg_color=(40, 40, 50), hover_color=(70, 70, 90), text_color=(255, 255, 255), image=None):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = font
+        self.bg_color = bg_color
+        self.hover_color = hover_color
+        self.text_color = text_color
+        self.is_hovered = False
+        self.image = image
+
+    def update(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+
+    def draw(self, surface):
+        if self.image:
+            scaled_img = pygame.transform.scale(self.image, (self.rect.width, self.rect.height))
+            surface.blit(scaled_img, self.rect)
+            if self.is_hovered:
+                hover_overlay = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
+                hover_overlay.fill((255, 255, 255, 45))
+                surface.blit(hover_overlay, self.rect.topleft)
+        else:
+            color = self.hover_color if self.is_hovered else self.bg_color
+            pygame.draw.rect(surface, color, self.rect, border_radius=10)
+            pygame.draw.rect(surface, (200, 200, 200), self.rect, width=2, border_radius=10)
+            if self.font and self.text:
+                txt_surf = self.font.render(self.text, True, self.text_color)
+                txt_rect = txt_surf.get_rect(center=self.rect.center)
+                surface.blit(txt_surf, txt_rect)
+
+    def is_clicked(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.is_hovered:
+                return True
+        return False
+
+
+class FloatingText:
+    def __init__(self, x, y, text, color=(255, 80, 80), font_size=20, duration=0.6):
+        self.x = x
+        self.y = y
+        self.text = str(text)
+        self.color = color
+        self.font = pygame.font.SysFont("arial", font_size, bold=True)
+        self.duration = duration
+        self.timer = duration
+        self.vy = -40
+
+    def update(self, dt):
+        self.timer -= dt
+        self.y += self.vy * dt
+
+    def draw(self, surface, cam_x, cam_y):
+        if self.timer <= 0:
+            return
+        alpha = int(255 * max(0, (self.timer / self.duration)))
+        txt_surf = self.font.render(self.text, True, self.color)
+        txt_surf.set_alpha(alpha)
+        sx = int(self.x - cam_x)
+        sy = int(self.y - cam_y)
+        surface.blit(txt_surf, (sx, sy))
+
+
+class Particle:
+    def __init__(self, x, y, color=(255, 180, 40)):
+        self.x = x
+        self.y = y
+        self.color = color
+        angle = random.uniform(0, 2 * math.pi)
+        speed = random.uniform(60, 250)
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed
+        self.radius = random.uniform(3, 6)
+        self.lifetime = random.uniform(0.2, 0.5)
+        self.timer = self.lifetime
+
+    def update(self, dt):
+        self.timer -= dt
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+        self.radius = max(0, self.radius - dt * 8)
+
+    def draw(self, surface, cam_x, cam_y):
+        if self.timer <= 0 or self.radius <= 0:
+            return
+        sx = int(self.x - cam_x)
+        sy = int(self.y - cam_y)
+        pygame.draw.circle(surface, self.color, (sx, sy), int(self.radius))
 
 
 class Player:
@@ -128,7 +227,6 @@ class Enemy:
             self.radius = 18
             self.damage = 22
             self.color = (220, 215, 200)
-
         else:
             raise ValueError(f"Unknown enemy type: {enemy_type}")
 
@@ -187,7 +285,7 @@ class Game:
         pygame.init()
         pygame.font.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Classroom Survivor - Pygame Edition")
+        pygame.display.set_caption("Comsci Survivor")
         self.clock = pygame.time.Clock()
 
         font_path = os.path.join(BASE_DIR, "assets", "fonts", "Minecraft.ttf")
@@ -205,12 +303,27 @@ class Game:
         self.TA_sprite = load_sprite("TA.png", (36, 36))
         self.professor_sprite = load_sprite("professor.png", (40, 40))
         self.skel_sprite = load_sprite("rector.png", (44, 44))
-        
 
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
 
+        self.menu_bg = load_sprite("main_menu_background.jpg", (SCREEN_WIDTH, SCREEN_HEIGHT))
+
+        self.img_start = load_sprite("start_game_button.png", (220, 60))
+        self.img_quit = load_sprite("quit_button.png", (220, 60))
+        self.img_resume = load_sprite("resume_button.png", (220, 60))
+        self.img_restart = load_sprite("restart_button.png", (220, 60))
+        self.img_main_menu = load_sprite("main_menu_button.png", (220, 60))
+
+        self.btn_start = Button(SCREEN_WIDTH // 2 - 110, 480, 220, 60, "START GAME", self.font, image=self.img_start)
+        self.btn_quit = Button(SCREEN_WIDTH // 2 - 110, 560, 220, 60, "QUIT", self.font, image=self.img_quit)
+
+        self.btn_resume = Button(SCREEN_WIDTH // 2 - 110, 250, 220, 60, "RESUME", self.font, image=self.img_resume)
+        self.btn_restart = Button(SCREEN_WIDTH // 2 - 110, 330, 220, 60, "RESTART", self.font, image=self.img_restart)
+        self.btn_main_menu = Button(SCREEN_WIDTH // 2 - 110, 410, 220, 60, "MAIN MENU", self.font, image=self.img_main_menu)
+
         self.current_stage = Stage1()
+        self.state = GameState.MAIN_MENU
         self.reset_game()
 
     def reset_game(self):
@@ -218,6 +331,9 @@ class Game:
         self.enemies = []
         self.coffees = []
         self.gems = []
+        self.floating_texts = []
+        self.particles = []
+
         self.supplies = Supplies(random.getrandbits(32))
         self.supplies.populate(self.player.x, self.player.y)
         self.camera_x = self.player.x - SCREEN_WIDTH // 2
@@ -233,6 +349,13 @@ class Game:
 
         self.is_game_over = False
         self.is_running = True
+
+    def create_explosion(self, x, y, count=20, color=(255, 160, 30)):
+        for _ in range(count):
+            self.particles.append(Particle(x, y, color))
+
+    def add_damage_text(self, x, y, text, color=(255, 80, 80)):
+        self.floating_texts.append(FloatingText(x, y, text, color))
 
     def spawn_enemy(self):
         angle = random.uniform(0, math.tau)
@@ -279,29 +402,57 @@ class Game:
             self.is_level_up = False
 
     def handle_events(self):
+        mouse_pos = pygame.mouse.get_pos()
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.is_running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.is_running = False
-                elif self.is_level_up and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
-                    index = event.key - pygame.K_1
-                    if index < len(self.current_upgrades):
-                        self.apply_upgrade(self.current_upgrades[index])
-                elif event.key == pygame.K_r and self.is_game_over:
+
+            if self.state == GameState.MAIN_MENU:
+                self.btn_start.update(mouse_pos)
+                self.btn_quit.update(mouse_pos)
+                if self.btn_start.is_clicked(event):
                     self.reset_game()
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
-                mx, my = event.pos
-                for idx, rect in enumerate(self.upgrade_rects):
-                    if rect.collidepoint(mx, my):
-                        self.apply_upgrade(self.current_upgrades[idx])
-                        break
+                    self.state = GameState.PLAYING
+                elif self.btn_quit.is_clicked(event):
+                    self.is_running = False
+
+            elif self.state == GameState.PAUSED:
+                self.btn_resume.update(mouse_pos)
+                self.btn_restart.update(mouse_pos)
+                self.btn_main_menu.update(mouse_pos)
+
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self.state = GameState.PLAYING
+                elif self.btn_resume.is_clicked(event):
+                    self.state = GameState.PLAYING
+                elif self.btn_restart.is_clicked(event):
+                    self.reset_game()
+                    self.state = GameState.PLAYING
+                elif self.btn_main_menu.is_clicked(event):
+                    self.state = GameState.MAIN_MENU
+
+            elif self.state == GameState.PLAYING:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.state = GameState.PAUSED
+                    elif self.is_level_up and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                        index = event.key - pygame.K_1
+                        if index < len(self.current_upgrades):
+                            self.apply_upgrade(self.current_upgrades[index])
+                    elif event.key == pygame.K_r and self.is_game_over:
+                        self.reset_game()
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
+                    mx, my = event.pos
+                    for idx, rect in enumerate(self.upgrade_rects):
+                        if rect.collidepoint(mx, my):
+                            self.apply_upgrade(self.current_upgrades[idx])
+                            break
 
     def update(self, dt=1/FPS):
-        if self.is_game_over or self.is_level_up:
+        if self.state != GameState.PLAYING or self.is_game_over or self.is_level_up:
             return
-        # A stalled window must not jump the simulation several seconds ahead.
+
         dt = min(max(dt, 0), 0.1)
         self.elapsed_seconds += dt
         self.timer_seconds = int(self.elapsed_seconds)
@@ -320,24 +471,39 @@ class Game:
                 self.spawn_enemy()
             self.spawn_timer %= 2/3
 
+        for ft in self.floating_texts[:]:
+            ft.update(dt)
+            if ft.timer <= 0:
+                self.floating_texts.remove(ft)
+
+        for p in self.particles[:]:
+            p.update(dt)
+            if p.timer <= 0 or p.radius <= 0:
+                self.particles.remove(p)
+
         for enemy in self.enemies:
             if enemy.hp > 0:
                 enemy.update(self.player.x, self.player.y, dt)
         self.player.weapons.update(dt, self.player, self.enemies)
-        # Resolve kills before contact damage; each enemy drops loot once.
+
         for enemy in self.enemies[:]:
             if enemy.hp <= 0:
                 self.gems.append(Gem(enemy.x, enemy.y))
                 if random.random() < 0.08:
                     self.coffees.append(Coffee(enemy.x, enemy.y))
                 self.kill_count += 1
+                self.create_explosion(enemy.x, enemy.y, count=18, color=enemy.color)
+                self.add_damage_text(enemy.x, enemy.y, "KILL", color=(255, 215, 0))
                 self.enemies.remove(enemy)
+
         if self.player.hurt_remaining <= 0:
             contacts = [enemy for enemy in self.enemies
                         if math.hypot(enemy.x-self.player.x, enemy.y-self.player.y) < enemy.radius+self.player.radius]
             if contacts:
-                self.player.hp = max(0, self.player.hp-max(e.damage for e in contacts))
+                dmg = max(e.damage for e in contacts)
+                self.player.hp = max(0, self.player.hp - dmg)
                 self.player.hurt_remaining = 0.75
+                self.add_damage_text(self.player.x, self.player.y - 10, f"-{dmg}", color=(255, 70, 70))
                 if self.player.hp <= 0:
                     self.is_game_over = True
                     return
@@ -377,9 +543,9 @@ class Game:
             self.screen.fill((24, 20, 34))
 
     def draw_hud(self):
-        bar_h = 12
+        bar_h = 14
         pygame.draw.rect(self.screen, (28, 30, 45), (0, bar_h, SCREEN_WIDTH, 35))
-        ratio = min(1.0, self.player.exp / self.player.exp_to_next)
+        ratio = min(1.0, self.player.exp / self.player.exp_to_next) if self.player.exp_to_next > 0 else 0
         pygame.draw.rect(self.screen, (20, 20, 30), (0, 0, SCREEN_WIDTH, bar_h))
         pygame.draw.rect(self.screen, COLOR_EXP, (0, 0, int(SCREEN_WIDTH * ratio), bar_h))
 
@@ -474,39 +640,66 @@ class Game:
             )
 
     def render(self):
-        self.draw_background()
-        self.supplies.draw(self.screen, self.camera_x, self.camera_y, self.small_font, self.player)
+        if self.state == GameState.MAIN_MENU:
+            if self.menu_bg:
+                self.screen.blit(self.menu_bg, (0, 0))
+            else:
+                self.draw_background()
+                title = self.title_font.render("COMSCI SURVIVOR", True, COLOR_GOLD)
+                self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 180))
 
-        for g in self.gems:
-            g.draw(self.screen, self.camera_x, self.camera_y)
-        for coffee in self.coffees:
-            coffee.draw(self.screen, self.camera_x, self.camera_y)
-        for e in self.enemies:
-            e.draw(self.screen, self.camera_x, self.camera_y)
+            self.btn_start.draw(self.screen)
+            self.btn_quit.draw(self.screen)
+        else:
+            self.draw_background()
+            self.supplies.draw(self.screen, self.camera_x, self.camera_y, self.small_font, self.player)
 
-        self.player.weapons.draw(self.screen, self.player, self.camera_x, self.camera_y)
-        self.player.draw(self.screen, self.camera_x, self.camera_y)
-        self.draw_hud()
+            for g in self.gems:
+                g.draw(self.screen, self.camera_x, self.camera_y)
+            for coffee in self.coffees:
+                coffee.draw(self.screen, self.camera_x, self.camera_y)
+            for e in self.enemies:
+                e.draw(self.screen, self.camera_x, self.camera_y)
 
-        if self.is_level_up:
-            self.draw_level_up_modal()
-        elif self.is_game_over:
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((40, 10, 15, 200))
-            self.screen.blit(overlay, (0, 0))
-            over_txt = self.title_font.render("GAME OVER", True, (255, 70, 70))
-            self.screen.blit(over_txt, (SCREEN_WIDTH // 2 - over_txt.get_width() // 2, 250))
-            restart_txt = self.font.render("Press [ R ] to Restart | Press [ ESC ] to Quit", True, COLOR_GOLD)
-            self.screen.blit(restart_txt, (SCREEN_WIDTH // 2 - restart_txt.get_width() // 2, 330))
+            for p in self.particles:
+                p.draw(self.screen, self.camera_x, self.camera_y)
+            for ft in self.floating_texts:
+                ft.draw(self.screen, self.camera_x, self.camera_y)
+
+            self.player.weapons.draw(self.screen, self.player, self.camera_x, self.camera_y)
+            self.player.draw(self.screen, self.camera_x, self.camera_y)
+            self.draw_hud()
+
+            if self.is_level_up:
+                self.draw_level_up_modal()
+            elif self.is_game_over:
+                overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                overlay.fill((40, 10, 15, 200))
+                self.screen.blit(overlay, (0, 0))
+                over_txt = self.title_font.render("GAME OVER", True, (255, 70, 70))
+                self.screen.blit(over_txt, (SCREEN_WIDTH // 2 - over_txt.get_width() // 2, 250))
+                restart_txt = self.font.render("Press [ R ] to Restart | Press [ ESC ] to Quit", True, COLOR_GOLD)
+                self.screen.blit(restart_txt, (SCREEN_WIDTH // 2 - restart_txt.get_width() // 2, 330))
+
+            if self.state == GameState.PAUSED:
+                overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 160))
+                self.screen.blit(overlay, (0, 0))
+
+                pause_title = self.title_font.render("GAME PAUSED", True, COLOR_WHITE)
+                self.screen.blit(pause_title, (SCREEN_WIDTH // 2 - pause_title.get_width() // 2, 150))
+
+                self.btn_resume.draw(self.screen)
+                self.btn_restart.draw(self.screen)
+                self.btn_main_menu.draw(self.screen)
 
         pygame.display.flip()
 
     def run(self):
         while self.is_running:
-            dt = self.clock.tick(FPS)/1000.0
-            was_paused = self.is_level_up or self.is_game_over
+            dt = self.clock.tick(FPS) / 1000.0
+            was_paused = self.is_level_up or self.is_game_over or self.state in (GameState.MAIN_MENU, GameState.PAUSED)
             self.handle_events()
-            # Do not charge the last modal frame to active gameplay.
             if not was_paused:
                 self.update(dt)
             self.render()
