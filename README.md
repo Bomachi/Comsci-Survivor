@@ -14,6 +14,41 @@ Move with **WASD / arrow keys**. Weapons attack automatically. Pick a level-up
 card with the mouse or **1 / 2 / 3**. Press **R** after defeat to restart, or
 **Esc** to quit.
 
+## Stages
+
+| Stage | Length | Enemies |
+| --- | --- | --- |
+| 1: Ancient Cemetery | 3 minutes, then Stage 2 | TA, professor, rector |
+| 2: Accounting Faculty / ด่านบุกคณะบัญชี | Boss at 2:30, beat it to win | Accounting students and the Chief Auditor |
+
+Clearing Stage 1 keeps your level and weapons, restores 30 HP and clears the
+field. Stage 2 enemies give more EXP:
+
+| Enemy | Behavior |
+| --- | --- |
+| Accounting Freshman / หนุ่มบัญชีปี 1 | Fast, weak, comes in crowds |
+| Calculator Thrower / สายเครื่องคิดเลข | Keeps about 240 px away and throws calculators (12 damage) |
+| Accounting Senior / รุ่นพี่บัญชี | Slow, tanky, heavy contact damage |
+| The Chief Auditor / ประธานตรวจสอบบัญชี (boss) | 3200 HP. State machine: chase, coin ring, telegraphed dash (red line) and summoning freshmen; below 50% HP it attacks faster with 16 coins. Drops EXP and food |
+
+Enemy shots use the same 0.75-second hit grace as contact damage. Practice
+Stage 2 directly with `python main.py --stage 2` (starts at level 12 with
+Enter Key L4, Project Books L3, LAN Whip L3).
+
+## Debug overlay and CS systems
+
+Press **F3** in game to show the debug overlay: FPS, frame time, collision pair
+checks, the spatial-hash grid, hit circles and the boss state machine.
+**F2** switches crowd separation between the spatial hash and the naive
+O(n²) method, **F4** toggles demo mode (weapons off, invincible) so crowds
+stay on screen, and **F5** adds 300 enemies for a stress test.
+
+- `spatial.py`: uniform-grid spatial hash for enemy separation (~O(n)).
+  Benchmark: `python benchmarks/collision_benchmark.py`.
+- `accounting.py` `BossBrain`: the Chief Auditor's finite state machine
+  (CHASE, AUDIT, AIM, CHARGE, RECOVER, SUMMON).
+- `docs/PRESENTATION.md`: talking points, demo order, benchmark results and diagrams.
+
 ## Weapons and items
 
 Start with Enter Key. Equip at most **three weapon types**, each upgradable to
@@ -65,8 +100,11 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   for long window stalls. Contact damage has a 0.75-second grace period.
 - Keep the same `Player` when adding stage transitions to preserve EXP, level
   and weapon levels. Clear transient weapon projectiles/effects on transition.
-  This branch currently implements Stage 1; bosses and stage transitions are
-  separate future work.
+- `stages/`: each stage sets its spawn table, length, tile, spawn interval and
+  optional boss. `stages.STAGES` is the play order; `Game.start_stage()` moves
+  to a stage while keeping the player.
+- `accounting.py`: enemy projectiles, ranged enemy fire and the Chief Auditor's
+  attack pattern.
 
 ## Tests
 
