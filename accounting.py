@@ -50,15 +50,24 @@ class EnemyShot:
                 pygame.draw.rect(surface, (60, 60, 75), (sx - 4 + col * 3, sy + row * 3, 2, 2))
 
 
-def update_ranged(enemy, player, dt, shots):
-    """Calculator-throwing enemies fire at the player from a distance."""
+def update_ranged(enemy, player, dt, shots, player_vel=(0.0, 0.0)):
+    """Calculator-throwing enemies fire at where the player is going to be.
+
+    Lead targeting: aim at position + velocity * flight time (one refinement
+    step), so walking in a straight line no longer dodges every throw.
+    """
     enemy.shoot_timer -= dt
     if enemy.shoot_timer > 0:
         return
     enemy.shoot_timer = enemy.shoot_cooldown
-    if math.hypot(player.x - enemy.x, player.y - enemy.y) > 520:
+    dist = math.hypot(player.x - enemy.x, player.y - enemy.y)
+    if dist > 520:
         return
-    angle = math.atan2(player.y - enemy.y, player.x - enemy.x)
+    t = dist / CALC_SHOT_SPEED
+    tx, ty = player.x + player_vel[0] * t, player.y + player_vel[1] * t
+    t = math.hypot(tx - enemy.x, ty - enemy.y) / CALC_SHOT_SPEED
+    tx, ty = player.x + player_vel[0] * t * 0.85, player.y + player_vel[1] * t * 0.85
+    angle = math.atan2(ty - enemy.y, tx - enemy.x)
     shots.append(EnemyShot(enemy.x, enemy.y, angle, enemy.shot_damage, "calc"))
 
 

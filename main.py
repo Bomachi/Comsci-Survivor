@@ -14,6 +14,9 @@ from item_art import draw_item
 from supplies import Supplies, Food
 from accounting import update_ranged, update_boss, draw_boss_telegraph
 from spatial import separate, CELL_SIZE
+from pathfinding import ObstacleMap, FlowField
+from animation import Animator, Effects
+from stage_art import Scenery
 import time
 
 SCREEN_WIDTH = 1000
@@ -58,6 +61,8 @@ class Player:
         self.weapons = WeaponSystem()
         self.coffee_remaining = 0.0
         self.hurt_remaining = 0.0
+        self.anim = Animator()
+        self.anim.spawn = 0
 
     @property
     def move_speed(self):
@@ -91,9 +96,9 @@ class Player:
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
         if self.sprite:
-            img = self.sprite if self.facing_right else pygame.transform.flip(self.sprite, True, False)
-            rect = img.get_rect(center=(sx, sy))
-            surface.blit(img, rect)
+            # Blink while invulnerable after a hit.
+            alpha = 110 if self.hurt_remaining > 0 and int(self.hurt_remaining * 14) % 2 else 255
+            self.anim.draw(surface, self.sprite, sx, sy, self.facing_right, alpha=alpha)
         else:
             pygame.draw.circle(surface, (80, 200, 120), (sx, sy), self.radius)
 
@@ -120,6 +125,17 @@ class Enemy:
         self.shot_damage = 0
         self.is_boss = False
         self.mass = 1.0
+        # Smarter movement and animation
+        self.anim = Animator()
+        self.prev_hp = None
+        self.flank = random.uniform(-0.7, 0.7)     # approach angle offset -> enemies surround
+        self.can_lunge = False
+        self.lunge_state = ""                      # "", "windup" or "dash"
+        self.lunge_timer = 0.0
+        self.lunge_cooldown = random.uniform(0.5, 2.0)
+        self.lunge_dir = (0.0, 0.0)
+        self.strafe_sign = random.choice((-1, 1))
+        self.strafe_timer = random.uniform(1.5, 3.0)
 
         if enemy_type == "TA":
             self.hp = 20
@@ -147,6 +163,7 @@ class Enemy:
             self.damage = 10
             self.color = (60, 150, 90)
             self.exp_value = 2
+            self.can_lunge = True
         elif enemy_type == "acc_calculator":
             self.hp = 55
             self.speed = 85.0
@@ -180,32 +197,77 @@ class Enemy:
         else:
             raise ValueError(f"Unknown enemy type: {enemy_type}")
         self.max_hp = self.hp
+        self.prev_hp = self.hp
 
-    def update(self, px, py, dt):
+    def update(self, px, py, dt, steer=None):
+        """Move toward (px, py). `steer` is an optional unit vector from the
+        Game (flow field around obstacles, or a flanking angle)."""
         speed = self.speed * (0.55 if self.slow_remaining > 0 else 1.0)
         self.slow_remaining = max(0, self.slow_remaining - dt)
         dx = px - self.x
         dy = py - self.y
         dist = math.hypot(dx, dy)
-        if self.preferred_range and dist < self.preferred_range:
-            # Ranged enemies back away to keep throwing from a distance.
-            dx, dy = -dx, -dy
-            speed *= 0.6
-        if dist > 0:
+        if self.can_lunge and self.update_lunge(dx, dy, dist, speed, dt):
+            return
+        if self.preferred_range and dist > 0:
+            low, high = self.preferred_range * 0.75, self.preferred_range * 1.25
+            self.strafe_timer -= dt
+            if self.strafe_timer <= 0:
+                self.strafe_sign *= -1
+                self.strafe_timer = random.uniform(1.5, 3.0)
+            if dist < low:
+                # Too close: back away while throwing.
+                dx, dy = -dx, -dy
+                speed *= 0.6
+                steer = None
+            elif dist < high:
+                # In range: circle-strafe so the player cannot just walk up.
+                dx, dy = -dy * self.strafe_sign, dx * self.strafe_sign
+                speed *= 0.5
+                steer = None
+        if steer is not None:
+            self.x += steer[0] * speed * dt
+            self.y += steer[1] * speed * dt
+            self.facing_right = (px > self.x)
+        elif dist > 0:
             step = min(dist, speed * dt)
             self.x += (dx / dist) * step
             self.y += (dy / dist) * step
             self.facing_right = (px > self.x)
 
+    def update_lunge(self, dx, dy, dist, speed, dt):
+        """Freshmen crouch (telegraph) then dash at the player. True = handled."""
+        self.lunge_cooldown -= dt
+        if self.lunge_state == "windup":
+            self.lunge_timer -= dt
+            if self.lunge_timer <= 0:
+                self.lunge_state, self.lunge_timer = "dash", 0.32
+            return True
+        if self.lunge_state == "dash":
+            self.lunge_timer -= dt
+            self.x += self.lunge_dir[0] * speed * 2.7 * dt
+            self.y += self.lunge_dir[1] * speed * 2.7 * dt
+            if self.lunge_timer <= 0:
+                self.lunge_state, self.lunge_cooldown = "", random.uniform(1.8, 2.8)
+            return True
+        if 40 < dist < 120 and self.lunge_cooldown <= 0:
+            self.lunge_state, self.lunge_timer = "windup", 0.28
+            self.lunge_dir = (dx / dist, dy / dist)
+            self.facing_right = dx > 0
+            return True
+        return False
+
     def draw(self, surface, cam_x, cam_y):
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
         if self.sprite:
-            img = self.sprite if self.facing_right else pygame.transform.flip(self.sprite, True, False)
-            rect = img.get_rect(center=(sx, sy))
-            surface.blit(img, rect)
+            self.anim.draw(surface, self.sprite, sx, sy, self.facing_right, windup=self.lunge_state == "windup")
         else:
             pygame.draw.circle(surface, self.color, (sx, sy), self.radius)
+
+    @property
+    def feet_y(self):
+        return self.y + (self.sprite.get_height() / 2 if self.sprite else self.radius)
 
 
 class Gem:
@@ -275,6 +337,13 @@ class Game:
         self.demo_mode = False  # F4: weapons off + invincible, for crowd demos
         self.frame_ms = 0.0
         self.sep_history = []
+        self.effects = Effects()
+        self.obstacles = ObstacleMap()
+        self.flow = FlowField(self.obstacles)
+        self.scenery = None
+        self.player_vel = (0.0, 0.0)
+        self.last_dt = 1 / FPS
+        self.flow_ms = 0.0
 
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
@@ -304,6 +373,40 @@ class Game:
         self.player.weapons.book_hits.clear()
         self.banner_text = self.current_stage.name.upper()
         self.banner_remaining = 3.0
+        self.effects.clear()
+        self.scenery = Scenery() if self.current_stage.decorated else None
+        self.obstacles.set_rects([])
+        self.flow.target_cell = None
+        self.refresh_scenery()
+
+    def refresh_scenery(self):
+        if self.scenery and self.scenery.update(self.player.x, self.player.y):
+            self.obstacles.set_rects(self.scenery.solid_rects())
+            self.flow.target_cell = None   # obstacles changed: rebuild the field
+            self.obstacles.push_out(self.player)
+
+    def steer_for(self, enemy):
+        """Unit vector for an enemy, or None for a straight line to the player.
+
+        Near obstacles the BFS flow field is used when it points away from the
+        straight line (something is in the way). In the open, enemies keep an
+        individual angle offset so a crowd spreads out and surrounds the player
+        instead of forming a queue; the offset fades as they get close.
+        """
+        dx, dy = self.player.x - enemy.x, self.player.y - enemy.y
+        dist = math.hypot(dx, dy)
+        if dist < 1:
+            return None
+        ux, uy = dx / dist, dy / dist
+        if self.obstacles.rects:
+            field = self.flow.direction(enemy.x, enemy.y)
+            if field and field[0] * ux + field[1] * uy < 0.9:   # > ~25 degrees off the straight line
+                return field
+        if dist > 140:
+            angle = enemy.flank * min(1.0, (dist - 140) / 320)
+            c, s = math.cos(angle), math.sin(angle)
+            return (ux * c - uy * s, ux * s + uy * c)
+        return None
 
     @property
     def stage_seconds(self):
@@ -345,6 +448,7 @@ class Game:
 
     def add_enemy(self, etype, x, y):
         enemy = Enemy(x, y, etype, sprite=self.enemy_sprites.get(etype))
+        self.obstacles.push_out(enemy)
         self.enemies.append(enemy)
         return enemy
 
@@ -445,9 +549,19 @@ class Game:
         self.banner_remaining = max(0, self.banner_remaining - dt)
         self.player.coffee_remaining = max(0, self.player.coffee_remaining-dt)
         self.player.hurt_remaining = max(0, self.player.hurt_remaining-dt)
+        self.last_dt = dt
         previous_position = (self.player.x, self.player.y)
         self.player.handle_input(dt)
+        self.obstacles.push_out(self.player)
         moved = math.hypot(self.player.x - previous_position[0], self.player.y - previous_position[1]) > 1e-6
+        self.player_vel = ((self.player.x - previous_position[0]) / dt if dt else 0,
+                           (self.player.y - previous_position[1]) / dt if dt else 0)
+        self.player.anim.update(self.player.x, self.player.y, dt)
+        self.refresh_scenery()
+        if self.obstacles.rects:
+            started = time.perf_counter()
+            self.flow.update(self.player.x, self.player.y)
+            self.flow_ms = (time.perf_counter() - started) * 1000
 
         smoothing = 1 - 0.9 ** (dt*60)
         self.camera_x += (self.player.x - SCREEN_WIDTH//2 - self.camera_x)*smoothing
@@ -465,20 +579,34 @@ class Game:
                     # The boss state machine decides when and how it moves.
                     update_boss(enemy, self.player, dt, self.enemy_shots, self.add_enemy)
                     continue
-                enemy.update(self.player.x, self.player.y, dt)
+                enemy.update(self.player.x, self.player.y, dt, self.steer_for(enemy))
                 if enemy.shoot_cooldown:
-                    update_ranged(enemy, self.player, dt, self.enemy_shots)
+                    update_ranged(enemy, self.player, dt, self.enemy_shots, self.player_vel)
         # Crowd separation: naive O(n^2) or spatial hash (toggle with F2).
         living = [e for e in self.enemies if e.hp > 0]
         started = time.perf_counter()
         self.pair_stats = separate(living, self.collision_mode)
         self.pair_n = len(living)
         self.separation_ms = (time.perf_counter() - started) * 1000
+        if self.obstacles.rects:
+            for enemy in living:
+                self.obstacles.push_out(enemy)
         if not self.demo_mode:
             self.player.weapons.update(dt, self.player, self.enemies)
+        # Hit feedback: flash + damage number whenever an enemy lost HP.
+        for enemy in self.enemies:
+            enemy.anim.update(enemy.x, enemy.y, dt)
+            if enemy.prev_hp is not None and enemy.hp < enemy.prev_hp:
+                enemy.anim.hit()
+                lost = enemy.prev_hp - max(0, enemy.hp)
+                self.effects.damage(enemy.x, enemy.y - enemy.radius - 18, lost,
+                                    (255, 120, 90) if enemy.is_boss else (255, 240, 200))
+            enemy.prev_hp = enemy.hp
+        self.effects.update(dt)
         # Resolve kills before contact damage; each enemy drops loot once.
         for enemy in self.enemies[:]:
             if enemy.hp <= 0:
+                self.effects.burst(enemy.x, enemy.y, enemy.sprite, 40 if enemy.is_boss else 10)
                 self.gems.append(Gem(enemy.x, enemy.y, enemy.exp_value))
                 if enemy.is_boss:
                     for i in range(12):
@@ -529,6 +657,9 @@ class Game:
             self.trigger_level_up()
 
     def draw_background(self):
+        if self.scenery:
+            self.scenery.draw_floor(self.screen, self.camera_x, self.camera_y)
+            return
         tile = self.stage_tile()
         if tile:
             tile_w, tile_h = 64, 64
@@ -595,8 +726,12 @@ class Game:
         self.screen.blit(label, (box.x + 8, box.y + 3))
 
     def draw_debug_world(self):
-        """Spatial-hash grid (occupied cells shaded), hit circles and boss state."""
+        """Spatial-hash grid (occupied cells shaded), hit circles, flow field and boss state."""
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        if self.obstacles.rects:
+            self.flow.draw(overlay, self.camera_x, self.camera_y)
+            for rect in self.obstacles.rects:
+                pygame.draw.rect(overlay, (255, 60, 60, 200), rect.move(-self.camera_x, -self.camera_y), 2)
         cs = CELL_SIZE
         counts = {}
         for e in self.enemies:
@@ -634,6 +769,8 @@ class Game:
             (f"collision [F2]: {self.collision_mode.upper()}", (120, 220, 255)),
             (f"pair checks {checks:,}   (n^2/2 = {n * (n - 1) // 2:,})", (120, 220, 255)),
             (f"separation {self.separation_ms:6.2f} ms", (120, 220, 255)),
+            (f"flow field BFS: {len(self.flow.dist)} cells, {self.flow.last_build_ms:.2f} ms/rebuild, rebuilds {self.flow.rebuilds}"
+             if self.obstacles.rects else "flow field: off (no obstacles in this stage)", (150, 170, 255)),
             ("[F5] spawn 300 enemies   [F4] demo mode: " + ("ON" if self.demo_mode else "off"),
              (255, 200, 80) if self.demo_mode else (180, 180, 190)),
         ]
@@ -740,15 +877,27 @@ class Game:
             g.draw(self.screen, self.camera_x, self.camera_y)
         for coffee in self.coffees:
             coffee.draw(self.screen, self.camera_x, self.camera_y)
-        for e in self.enemies:
-            e.draw(self.screen, self.camera_x, self.camera_y)
-        for shot in self.enemy_shots:
-            shot.draw(self.screen, self.camera_x, self.camera_y)
         if self.boss and self.boss.hp > 0:
             draw_boss_telegraph(self.screen, self.boss, self.camera_x, self.camera_y)
 
+        # Depth sorting: whatever stands lower on screen is drawn in front,
+        # so characters walk behind and in front of desks correctly.
+        view = pygame.Rect(self.camera_x - 120, self.camera_y - 120, SCREEN_WIDTH + 240, SCREEN_HEIGHT + 240)
+        drawables = [(e.feet_y, 1, e) for e in self.enemies if view.collidepoint(e.x, e.y)]
+        player_feet = self.player.y + (self.player.sprite.get_height() / 2 if self.player.sprite else self.player.radius)
+        drawables.append((player_feet, 2, self.player))
+        if self.scenery:
+            drawables += [(p.sort_y, 0, p) for p in self.scenery.visible(self.camera_x, self.camera_y, SCREEN_WIDTH, SCREEN_HEIGHT) if p.solid]
+        drawables.sort(key=lambda d: (d[0], d[1]))
+        for _, _, thing in drawables:
+            thing.draw(self.screen, self.camera_x, self.camera_y)
+
+        for shot in self.enemy_shots:
+            shot.draw(self.screen, self.camera_x, self.camera_y)
         self.player.weapons.draw(self.screen, self.player, self.camera_x, self.camera_y)
-        self.player.draw(self.screen, self.camera_x, self.camera_y)
+        self.effects.draw(self.screen, self.camera_x, self.camera_y, self.small_font)
+        if self.scenery:
+            self.scenery.draw_ambience(self.screen, self.last_dt)
         if self.show_debug:
             self.draw_debug_world()
         self.draw_hud()

@@ -26,8 +26,8 @@ field. Stage 2 enemies give more EXP:
 
 | Enemy | Behavior |
 | --- | --- |
-| Accounting Freshman / หนุ่มบัญชีปี 1 | Fast, weak, comes in crowds |
-| Calculator Thrower / สายเครื่องคิดเลข | Keeps about 240 px away and throws calculators (12 damage) |
+| Accounting Freshman / หนุ่มบัญชีปี 1 | Fast, weak, crowds surround you; crouches then lunges when close |
+| Calculator Thrower / สายเครื่องคิดเลข | Keeps about 240 px away, strafes, and leads its calculator throws (12 damage) |
 | Accounting Senior / รุ่นพี่บัญชี | Slow, tanky, heavy contact damage |
 | The Chief Auditor / ประธานตรวจสอบบัญชี (boss) | 3200 HP. State machine: chase, coin ring, telegraphed dash (red line) and summoning freshmen; below 50% HP it attacks faster with 16 coins. Drops EXP and food |
 
@@ -47,6 +47,9 @@ stay on screen, and **F5** adds 300 enemies for a stress test.
   Benchmark: `python benchmarks/collision_benchmark.py`.
 - `accounting.py` `BossBrain`: the Chief Auditor's finite state machine
   (CHASE, AUDIT, AIM, CHARGE, RECOVER, SUMMON).
+- `pathfinding.py`: obstacle map and a BFS flow field so enemies walk around desks.
+- `animation.py`: procedural walk bob, shadows, hit flash, death particles, damage numbers.
+- `stage_art.py`: Stage 2 marble floor, props placed per chunk (deterministic), vignette.
 - `docs/PRESENTATION.md`: talking points, demo order, benchmark results and diagrams.
 
 ## Weapons and items

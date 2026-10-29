@@ -16,6 +16,7 @@ class Stage2(BaseStage):
         self.spawn_interval = 0.55
         self.boss_type = "acc_boss"
         self.boss_time = self.BOSS_TIME
+        self.decorated = True
 
     def get_enemy_spawn_type(self, elapsed_seconds: int) -> str:
         roll = random.random()
