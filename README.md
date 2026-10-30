@@ -52,6 +52,14 @@ stay on screen, and **F5** adds 300 enemies for a stress test.
 - `stage_art.py`: Stage 2 marble floor, props placed per chunk (deterministic), vignette.
 - `docs/PRESENTATION.md`: talking points, demo order, benchmark results and diagrams.
 
+## Hand control (webcam, optional)
+
+Run `install_hand.bat` once (installs MediaPipe and downloads the 8 MB hand
+model), then press **F7** in game. Hold one open hand in front of the camera:
+the palm's offset from the centre steers the player like an analog joystick
+(further = faster). Make a **fist** to stop, press **F8** to re-centre on your
+hand. The keyboard always wins over hand input. Code: `hand_control.py`.
+
 ## Weapons and items
 
 Start with Enter Key. Equip at most **three weapon types**, each upgradable to

@@ -17,6 +17,7 @@ from spatial import separate, CELL_SIZE
 from pathfinding import ObstacleMap, FlowField
 from animation import Animator, Effects
 from stage_art import Scenery
+from hand_control import HandController, DEAD_ZONE, FULL_SPEED
 import time
 
 SCREEN_WIDTH = 1000
@@ -71,10 +72,18 @@ class Player:
     def drink_coffee(self):
         self.coffee_remaining = 10.0
 
-    def handle_input(self, dt):
+    def handle_input(self, dt, analog=None):
+        """Keyboard first; otherwise an analog vector (length 0..1), e.g. from hand control."""
         keys = pygame.key.get_pressed()
         dx = int(keys[pygame.K_d] or keys[pygame.K_RIGHT]) - int(keys[pygame.K_a] or keys[pygame.K_LEFT])
         dy = int(keys[pygame.K_s] or keys[pygame.K_DOWN]) - int(keys[pygame.K_w] or keys[pygame.K_UP])
+        if not dx and not dy and analog and (analog[0] or analog[1]):
+            ax, ay = analog
+            if abs(ax) > 0.05:
+                self.facing_right = ax > 0
+            self.x += ax * self.move_speed * dt
+            self.y += ay * self.move_speed * dt
+            return
         if dx:
             self.facing_right = dx > 0
         length = math.hypot(dx, dy) or 1
@@ -338,6 +347,7 @@ class Game:
         self.frame_ms = 0.0
         self.sep_history = []
         self.effects = Effects()
+        self.hand = HandController()
         self.obstacles = ObstacleMap()
         self.flow = FlowField(self.obstacles)
         self.scenery = None
@@ -522,6 +532,10 @@ class Game:
                 elif event.key == pygame.K_F2:
                     self.collision_mode = "naive" if self.collision_mode == "hash" else "hash"
                     self.sep_history.clear()
+                elif event.key == pygame.K_F7:
+                    self.hand.toggle()
+                elif event.key == pygame.K_F8:
+                    self.hand.recenter()
                 elif event.key == pygame.K_F4:
                     self.demo_mode = not self.demo_mode
                 elif event.key == pygame.K_F5 and not (self.is_level_up or self.is_game_over or self.is_victory):
@@ -551,7 +565,10 @@ class Game:
         self.player.hurt_remaining = max(0, self.player.hurt_remaining-dt)
         self.last_dt = dt
         previous_position = (self.player.x, self.player.y)
-        self.player.handle_input(dt)
+        if self.hand.status != "off":
+            self.player.handle_input(dt, self.hand.poll())
+        else:
+            self.player.handle_input(dt)
         self.obstacles.push_out(self.player)
         moved = math.hypot(self.player.x - previous_position[0], self.player.y - previous_position[1]) > 1e-6
         self.player_vel = ((self.player.x - previous_position[0]) / dt if dt else 0,
@@ -792,6 +809,42 @@ class Game:
             pygame.draw.line(panel, (120, 220, 255), (gx + i, gy + gh), (gx + i, gy + gh - min(gh, v / scale)))
         self.screen.blit(panel, (15, 100))
 
+    def draw_hand_panel(self):
+        """Camera preview with hand landmarks and the virtual joystick."""
+        hand = self.hand
+        if hand.status == "off":
+            return
+        w, h = 192, 144
+        x, y = 15, SCREEN_HEIGHT - h - 40
+        pygame.draw.rect(self.screen, (10, 10, 20), (x - 4, y - 4, w + 8, h + 34), border_radius=6)
+        preview = hand.preview
+        if preview is not None and preview.shape[1] == w:
+            surf = pygame.image.frombuffer(preview.tobytes(), (w, h), "RGB")
+            self.screen.blit(surf, (x, y))
+        else:
+            pygame.draw.rect(self.screen, (30, 30, 45), (x, y, w, h))
+        ax, ay = x + hand.anchor[0] * w, y + hand.anchor[1] * h
+        pygame.draw.circle(self.screen, (255, 255, 255), (ax, ay), DEAD_ZONE * w, 1)
+        pygame.draw.circle(self.screen, (120, 120, 140), (ax, ay), FULL_SPEED * w, 1)
+        points = hand.landmarks
+        if points:
+            pts = [(x + px * w, y + py * h) for px, py in points]
+            for a, b in ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10),
+                         (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17),
+                         (17, 18), (18, 19), (19, 20)):
+                pygame.draw.line(self.screen, (90, 230, 140), pts[a], pts[b], 2)
+            for p in pts:
+                pygame.draw.circle(self.screen, (255, 90, 90), p, 2)
+            dx, dy = hand.direction
+            colour = (255, 80, 80) if hand.fist else COLOR_GOLD
+            pygame.draw.line(self.screen, colour, (ax, ay), (ax + dx * 60, ay + dy * 60), 4)
+        label = {"loading": "HAND: loading...", "tracking": "HAND: FIST = STOP" if hand.fist else "HAND: tracking",
+                 "no hand": "HAND: show your hand", "error": "HAND: " + hand.error}.get(hand.status, hand.status)
+        colour = (255, 120, 120) if hand.status == "error" else COLOR_WHITE
+        self.screen.blit(self.small_font.render(label[:34], True, colour), (x, y + h + 4))
+        fps = self.small_font.render(f"{hand.fps:.0f} fps  [F7] off [F8] centre", True, (170, 170, 185))
+        self.screen.blit(fps, (x, y + h + 18))
+
     def draw_banner(self):
         if self.banner_remaining <= 0:
             return
@@ -901,6 +954,7 @@ class Game:
         if self.show_debug:
             self.draw_debug_world()
         self.draw_hud()
+        self.draw_hand_panel()
         if self.show_debug:
             self.draw_debug_panel()
         self.draw_banner()
@@ -941,6 +995,7 @@ class Game:
                 self.sep_history = (self.sep_history + [self.separation_ms])[-400:]
             self.render()
             self.frame_ms = (time.perf_counter() - started) * 1000
+        self.hand.stop()
         pygame.quit()
         sys.exit()
 

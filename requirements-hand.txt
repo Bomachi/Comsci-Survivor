@@ -1,0 +1,2 @@
+# Optional: hand control with the webcam (F7 in game)
+mediapipe>=1.2

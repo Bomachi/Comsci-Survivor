@@ -2,3 +2,6 @@ __pycache__/
 .vscode/
 .DS_Store
 .venv/
+
+# downloaded by install_hand.bat
+assets/models/
