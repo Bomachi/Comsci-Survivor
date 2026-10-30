@@ -8,7 +8,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPRITES_DIR = os.path.join(BASE_DIR, "assets", "sprites")
 
 from stages import STAGES
-from upgrades import available_upgrades, apply_upgrade
+from upgrades import available_upgrades, apply_upgrade, level_up_choices, apply_choice
 from weapons import WeaponSystem, WEAPONS, draw_icon
 from item_art import draw_item
 from supplies import Supplies, Food
@@ -496,9 +496,8 @@ class Game:
 
     def trigger_level_up(self):
         self.is_level_up = True
-        pool = available_upgrades(self.player)
-        num_options = min(3, len(pool))
-        self.current_upgrades = random.sample(pool, num_options)
+        self.current_upgrades = level_up_choices(self.player, random)
+        num_options = len(self.current_upgrades)
 
         card_w, card_h = 240, 300
         gap = 25
@@ -514,7 +513,7 @@ class Game:
     def apply_upgrade(self, upgrade_data):
         if not self.is_level_up or self.player.pending_level_ups <= 0:
             return
-        if upgrade_data not in self.current_upgrades or not apply_upgrade(self.player, upgrade_data):
+        if upgrade_data not in self.current_upgrades or not apply_choice(self.player, upgrade_data):
             return
         self.player.pending_level_ups -= 1
 
@@ -951,8 +950,7 @@ class Game:
             if upg["id"] in WEAPONS:
                 draw_icon(self.screen, upg["id"], (rect.centerx, rect.y+100), 32)
             else:
-                pygame.draw.line(self.screen, COLOR_HP_GREEN, (rect.centerx-15, rect.y+100), (rect.centerx+15, rect.y+100), 7)
-                pygame.draw.line(self.screen, COLOR_HP_GREEN, (rect.centerx, rect.y+85), (rect.centerx, rect.y+115), 7)
+                self.draw_passive_icon(upg["id"], rect.centerx, rect.y + 100)
 
             desc_surf = self.font.render(upg["desc"], True, COLOR_HP_GREEN)
             self.screen.blit(desc_surf, (rect.centerx - desc_surf.get_width() // 2, rect.y + 162))
@@ -968,6 +966,27 @@ class Game:
                 start_y=rect.y + 208,
                 line_spacing=18
             )
+
+    def draw_passive_icon(self, card_id, cx, cy):
+        if card_id == "vitality":        # red heart
+            pygame.draw.circle(self.screen, (220, 60, 70), (cx - 9, cy - 6), 11)
+            pygame.draw.circle(self.screen, (220, 60, 70), (cx + 9, cy - 6), 11)
+            pygame.draw.polygon(self.screen, (220, 60, 70), [(cx - 20, cy - 2), (cx + 20, cy - 2), (cx, cy + 20)])
+        elif card_id == "sneakers":      # shoe with speed lines
+            pygame.draw.rect(self.screen, (80, 150, 230), (cx - 14, cy - 12, 14, 18), border_radius=4)
+            pygame.draw.rect(self.screen, (80, 150, 230), (cx - 14, cy, 32, 10), border_radius=5)
+            pygame.draw.rect(self.screen, COLOR_WHITE, (cx - 14, cy + 8, 32, 4))
+            for i in range(3):
+                pygame.draw.line(self.screen, (200, 200, 210), (cx - 30, cy - 8 + i * 7), (cx - 20, cy - 8 + i * 7), 2)
+        elif card_id == "magnet":        # horseshoe magnet
+            pygame.draw.arc(self.screen, (210, 50, 50), (cx - 18, cy - 16, 36, 36), 3.14, 6.28, 9)
+            pygame.draw.rect(self.screen, (210, 50, 50), (cx - 18, cy - 20, 9, 22))
+            pygame.draw.rect(self.screen, (210, 50, 50), (cx + 9, cy - 20, 9, 22))
+            pygame.draw.rect(self.screen, (220, 220, 230), (cx - 18, cy - 26, 9, 7))
+            pygame.draw.rect(self.screen, (220, 220, 230), (cx + 9, cy - 26, 9, 7))
+        else:                            # green plus (Study Break)
+            pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx - 15, cy), (cx + 15, cy), 7)
+            pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx, cy - 15), (cx, cy + 15), 7)
 
     def render(self):
         self.draw_background()
