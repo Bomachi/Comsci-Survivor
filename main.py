@@ -17,7 +17,7 @@ from spatial import separate, CELL_SIZE
 from pathfinding import ObstacleMap, FlowField
 from animation import Animator, Effects
 from stage_art import Scenery
-from hand_control import HandController, DEAD_ZONE, FULL_SPEED
+from hand_control import HandController
 import time
 
 SCREEN_WIDTH = 1000
@@ -348,6 +348,9 @@ class Game:
         self.sep_history = []
         self.effects = Effects()
         self.hand = HandController()
+        self.hand_pick_index = None    # card under the hand during level-up
+        self.hand_hold = 0.0           # seconds the fist has been held
+        self.hand_armed = True         # must open the hand again between picks
         self.obstacles = ObstacleMap()
         self.flow = FlowField(self.obstacles)
         self.scenery = None
@@ -534,8 +537,6 @@ class Game:
                     self.sep_history.clear()
                 elif event.key == pygame.K_F7:
                     self.hand.toggle()
-                elif event.key == pygame.K_F8:
-                    self.hand.recenter()
                 elif event.key == pygame.K_F4:
                     self.demo_mode = not self.demo_mode
                 elif event.key == pygame.K_F5 and not (self.is_level_up or self.is_game_over or self.is_victory):
@@ -809,8 +810,43 @@ class Game:
             pygame.draw.line(panel, (120, 220, 255), (gx + i, gy + gh), (gx + i, gy + gh - min(gh, v / scale)))
         self.screen.blit(panel, (15, 100))
 
+    HAND_PICK_SECONDS = 0.6
+    HAND_RESTART_SECONDS = 1.2
+
+    def update_hand_menus(self, dt):
+        """Hand gestures for screens that pause gameplay.
+
+        Level-up: move the hand left/middle/right to point at a card, hold a fist
+        to choose it. Game over / victory: hold a fist to restart.
+        """
+        hand = self.hand
+        if hand.status != "tracking" or not hand.landmarks:
+            self.hand_pick_index, self.hand_hold = None, 0.0
+            return
+        if not hand.fist:
+            self.hand_hold, self.hand_armed = 0.0, True
+        if self.is_level_up and self.current_upgrades:
+            count = len(self.current_upgrades)
+            x = hand.landmarks[8][0]          # index fingertip
+            if not hand.fist:   # pointing chooses the card; the fist only confirms
+                self.hand_pick_index = max(0, min(count - 1, int(x * count)))
+            if hand.fist and self.hand_armed and self.hand_pick_index is not None:
+                self.hand_hold += dt
+                if self.hand_hold >= self.HAND_PICK_SECONDS:
+                    self.hand_hold, self.hand_armed = 0.0, False
+                    self.apply_upgrade(self.current_upgrades[min(self.hand_pick_index, count - 1)])
+        elif self.is_game_over or self.is_victory:
+            self.hand_pick_index = None
+            if hand.fist and self.hand_armed:
+                self.hand_hold += dt
+                if self.hand_hold >= self.HAND_RESTART_SECONDS:
+                    self.hand_hold, self.hand_armed = 0.0, False
+                    self.reset_game()
+        else:
+            self.hand_pick_index, self.hand_hold = None, 0.0
+
     def draw_hand_panel(self):
-        """Camera preview with hand landmarks and the virtual joystick."""
+        """Camera preview with hand landmarks and the pointing arrow."""
         hand = self.hand
         if hand.status == "off":
             return
@@ -823,9 +859,6 @@ class Game:
             self.screen.blit(surf, (x, y))
         else:
             pygame.draw.rect(self.screen, (30, 30, 45), (x, y, w, h))
-        ax, ay = x + hand.anchor[0] * w, y + hand.anchor[1] * h
-        pygame.draw.circle(self.screen, (255, 255, 255), (ax, ay), DEAD_ZONE * w, 1)
-        pygame.draw.circle(self.screen, (120, 120, 140), (ax, ay), FULL_SPEED * w, 1)
         points = hand.landmarks
         if points:
             pts = [(x + px * w, y + py * h) for px, py in points]
@@ -836,13 +869,17 @@ class Game:
             for p in pts:
                 pygame.draw.circle(self.screen, (255, 90, 90), p, 2)
             dx, dy = hand.direction
-            colour = (255, 80, 80) if hand.fist else COLOR_GOLD
-            pygame.draw.line(self.screen, colour, (ax, ay), (ax + dx * 60, ay + dy * 60), 4)
-        label = {"loading": "HAND: loading...", "tracking": "HAND: FIST = STOP" if hand.fist else "HAND: tracking",
+            if dx or dy:
+                tip = pts[8]
+                pygame.draw.line(self.screen, COLOR_GOLD, tip, (tip[0] + dx * 45, tip[1] + dy * 45), 4)
+                pygame.draw.circle(self.screen, COLOR_GOLD, (tip[0] + dx * 45, tip[1] + dy * 45), 5)
+        tracking_label = {"point": "HAND: pointing - walk", "fist": "HAND: fist - stop",
+                          "open": "HAND: point a finger to walk"}.get(hand.gesture, "HAND: tracking")
+        label = {"loading": "HAND: loading...", "tracking": tracking_label,
                  "no hand": "HAND: show your hand", "error": "HAND: " + hand.error}.get(hand.status, hand.status)
         colour = (255, 120, 120) if hand.status == "error" else COLOR_WHITE
         self.screen.blit(self.small_font.render(label[:34], True, colour), (x, y + h + 4))
-        fps = self.small_font.render(f"{hand.fps:.0f} fps  [F7] off [F8] centre", True, (170, 170, 185))
+        fps = self.small_font.render(f"{hand.fps:.0f} fps  [F7] camera off", True, (170, 170, 185))
         self.screen.blit(fps, (x, y + h + 18))
 
     def draw_banner(self):
@@ -877,6 +914,14 @@ class Game:
             self.screen.blit(line_surf, (start_x - line_surf.get_width() // 2, y))
             y += line_spacing
 
+    def draw_hand_hold_bar(self, rect, seconds):
+        if self.hand_hold <= 0:
+            return
+        ratio = min(1.0, self.hand_hold / seconds)
+        bar = pygame.Rect(rect.x + 20, rect.bottom + 12, rect.width - 40, 10)
+        pygame.draw.rect(self.screen, (30, 30, 45), bar, border_radius=4)
+        pygame.draw.rect(self.screen, COLOR_GOLD, (bar.x, bar.y, int(bar.width * ratio), bar.height), border_radius=4)
+
     def draw_level_up_modal(self):
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((12, 10, 22, 210))
@@ -891,7 +936,7 @@ class Game:
         mouse_pos = pygame.mouse.get_pos()
 
         for idx, (upg, rect) in enumerate(zip(self.current_upgrades, self.upgrade_rects)):
-            is_hover = rect.collidepoint(mouse_pos)
+            is_hover = rect.collidepoint(mouse_pos) or idx == self.hand_pick_index
 
             frame_img = self.card_frame_hover if (is_hover and self.card_frame_hover) else self.card_frame
             if frame_img:
@@ -912,6 +957,8 @@ class Game:
             desc_surf = self.font.render(upg["desc"], True, COLOR_HP_GREEN)
             self.screen.blit(desc_surf, (rect.centerx - desc_surf.get_width() // 2, rect.y + 162))
 
+            if idx == self.hand_pick_index:
+                self.draw_hand_hold_bar(rect, self.HAND_PICK_SECONDS)
             self.draw_wrapped_text(
                 text=upg["detail"],
                 font=self.small_font,
@@ -954,7 +1001,6 @@ class Game:
         if self.show_debug:
             self.draw_debug_world()
         self.draw_hud()
-        self.draw_hand_panel()
         if self.show_debug:
             self.draw_debug_panel()
         self.draw_banner()
@@ -981,6 +1027,10 @@ class Game:
                 surf = font.render(text, True, color)
                 self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
 
+        if self.hand.status != "off":
+            if (self.is_game_over or self.is_victory) and self.hand_hold > 0:
+                self.draw_hand_hold_bar(pygame.Rect(SCREEN_WIDTH // 2 - 150, 380, 300, 0), self.HAND_RESTART_SECONDS)
+            self.draw_hand_panel()
         pygame.display.flip()
 
     def run(self):
@@ -990,6 +1040,7 @@ class Game:
             self.handle_events()
             # Do not charge the last modal frame to active gameplay.
             started = time.perf_counter()
+            self.update_hand_menus(dt)
             if not was_paused:
                 self.update(dt)
                 self.sep_history = (self.sep_history + [self.separation_ms])[-400:]

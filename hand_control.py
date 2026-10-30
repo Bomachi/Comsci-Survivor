@@ -1,14 +1,13 @@
-"""Hand control: steer the player with one hand in front of the webcam.
+"""Hand control: steer the player by pointing in front of the webcam.
 
-    open hand   -> walk; the palm's offset from the centre of the camera image
-                   is a virtual joystick (further = faster, up to full speed)
-    fist        -> stop
-    F8          -> re-centre the joystick on where your hand is now
+    point (index finger out, other fingers folded) -> walk where the finger points
+    fist or open hand                              -> stand still
+    level-up screen: point at a card, hold a fist to pick it
 
 Pipeline (background thread, so the game loop never waits for the camera):
     webcam (OpenCV) -> mirror + downscale -> MediaPipe HandLandmarker (21
-    landmarks per hand, VIDEO mode) -> palm centre and fist test -> smoothed
-    analog direction that Game reads every frame.
+    landmarks per hand, VIDEO mode) -> gesture (point / fist / open) and the
+    index finger's direction -> smoothed unit vector that Game reads every frame.
 
 Optional feature: needs `pip install -r requirements-hand.txt` and the model
 file assets/models/hand_landmarker.task (install_hand.bat downloads both).
@@ -25,8 +24,8 @@ MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
 
 PALM = (0, 5, 9, 13, 17)                  # wrist + finger bases
 FINGERS = ((8, 6), (12, 10), (16, 14), (20, 18))   # (tip, middle joint) for 4 fingers
-DEAD_ZONE = 0.06                           # in image fractions: hand this close to centre = stand still
-FULL_SPEED = 0.22                          # offset that reaches full speed
+INDEX_BASE, INDEX_TIP = 5, 8
+MIN_POINT_LENGTH = 0.45                    # finger length / hand size; shorter = pointing at the camera
 LOST_TIMEOUT = 0.35                        # stop if the hand disappears for this long
 PREVIEW_SIZE = (192, 144)
 
@@ -49,14 +48,38 @@ def is_fist(landmarks):
     return folded >= 3
 
 
-def joystick(point, anchor, dead_zone=DEAD_ZONE, full=FULL_SPEED):
-    """Map a palm position to a direction vector with length 0..1 (analog speed)."""
-    dx, dy = point[0] - anchor[0], point[1] - anchor[1]
-    dist = math.hypot(dx, dy)
-    if dist <= dead_zone:
-        return (0.0, 0.0)
-    strength = min(1.0, (dist - dead_zone) / (full - dead_zone))
-    return (dx / dist * strength, dy / dist * strength)
+def finger_extended(landmarks, tip, joint):
+    """Extended = the tip is farther from the wrist than the finger's middle joint."""
+    wx, wy = landmarks[0]
+    return (math.hypot(landmarks[tip][0] - wx, landmarks[tip][1] - wy)
+            > math.hypot(landmarks[joint][0] - wx, landmarks[joint][1] - wy))
+
+
+def gesture(landmarks):
+    """'point', 'fist' or 'open'."""
+    index = finger_extended(landmarks, 8, 6)
+    others = sum(finger_extended(landmarks, tip, joint) for tip, joint in FINGERS[1:])
+    if index and others <= 1:
+        return "point"
+    if is_fist(landmarks):
+        return "fist"
+    return "open"
+
+
+def pointing_direction(landmarks):
+    """Unit vector from the index finger's base to its tip, or None.
+
+    The length is compared with the hand's size (wrist to middle-finger base),
+    so a finger pointing straight at the camera (looks short) does not move you.
+    """
+    bx, by = landmarks[INDEX_BASE]
+    tx, ty = landmarks[INDEX_TIP]
+    dx, dy = tx - bx, ty - by
+    length = math.hypot(dx, dy)
+    hand_size = math.hypot(landmarks[9][0] - landmarks[0][0], landmarks[9][1] - landmarks[0][1]) or 1e-6
+    if length / hand_size < MIN_POINT_LENGTH:
+        return None
+    return (dx / length, dy / length)
 
 
 class HandController:
@@ -67,15 +90,14 @@ class HandController:
         self.detector = detector          # tests inject a fake: callable(rgb, ms) -> landmarks or None
         self.status = "off"               # off, loading, tracking, no hand, error
         self.error = ""
-        self.anchor = (0.5, 0.5)
         self.direction = (0.0, 0.0)
         self.landmarks = None
         self.fist = False
+        self.gesture = "none"
         self.fps = 0.0
         self.preview = None               # small RGB numpy array for the HUD
         self._smoothed = None
         self._last_seen = 0.0
-        self._recenter = False
         self._running = False
         self._landmarker = None
         self._lock = threading.Lock()
@@ -98,9 +120,6 @@ class HandController:
         self.direction = (0.0, 0.0)
         self.landmarks = None
 
-    def recenter(self):
-        self._recenter = True
-
     def poll(self):
         with self._lock:
             if self.status == "tracking" and time.perf_counter() - self._last_seen > LOST_TIMEOUT:
@@ -118,17 +137,21 @@ class HandController:
             self._last_seen = now
             self.status = "tracking"
             self.landmarks = landmarks
-            center = palm_center(landmarks)
-            if self._recenter:
-                self.anchor, self._recenter = center, False
+            self.gesture = gesture(landmarks)
+            self.fist = self.gesture == "fist"
+            aim = pointing_direction(landmarks) if self.gesture == "point" else None
+            if aim is None:
+                self._smoothed = None
+                self.direction = (0.0, 0.0)
+                return self.direction
             # Exponential smoothing removes camera jitter (about 2 frames of lag).
             if self._smoothed is None:
-                self._smoothed = center
+                self._smoothed = aim
             else:
-                self._smoothed = (self._smoothed[0] * 0.5 + center[0] * 0.5,
-                                  self._smoothed[1] * 0.5 + center[1] * 0.5)
-            self.fist = is_fist(landmarks)
-            self.direction = (0.0, 0.0) if self.fist else joystick(self._smoothed, self.anchor)
+                sx, sy = self._smoothed[0] * 0.5 + aim[0] * 0.5, self._smoothed[1] * 0.5 + aim[1] * 0.5
+                length = math.hypot(sx, sy) or 1.0
+                self._smoothed = (sx / length, sy / length)
+            self.direction = self._smoothed
             return self.direction
 
     # ----- camera thread -----
@@ -165,8 +188,11 @@ class HandController:
             cam = cv2.VideoCapture(self.camera_index, backend)
             if not cam.isOpened():
                 raise RuntimeError("no camera found")
+            # MJPG lets most USB/laptop webcams deliver 30 fps over DirectShow.
+            cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cam.set(cv2.CAP_PROP_FPS, 30)
         except Exception as exc:
             self.status, self.error = "error", f"{type(exc).__name__}: {exc}"[:120]
             self._running = False

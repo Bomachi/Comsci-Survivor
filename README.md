@@ -55,10 +55,16 @@ stay on screen, and **F5** adds 300 enemies for a stress test.
 ## Hand control (webcam, optional)
 
 Run `install_hand.bat` once (installs MediaPipe and downloads the 8 MB hand
-model), then press **F7** in game. Hold one open hand in front of the camera:
-the palm's offset from the centre steers the player like an analog joystick
-(further = faster). Make a **fist** to stop, press **F8** to re-centre on your
-hand. The keyboard always wins over hand input. Code: `hand_control.py`.
+model), then press **F7** in game.
+
+| Gesture | Effect |
+| --- | --- |
+| Point with the index finger (other fingers folded) | Walk where the finger points |
+| Fist or open hand | Stand still |
+| Level-up: point at a card, then hold a fist 0.6 s | Pick that card |
+| Game over / victory: hold a fist 1.2 s | Restart |
+
+The keyboard always wins over hand input. Code: `hand_control.py`.
 
 ## Weapons and items
 
