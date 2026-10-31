@@ -7,6 +7,9 @@ class BaseStage:
         self.spawn_interval = 2/3
         self.boss_type = None
         self.boss_time = None
+        self.boss_name = ""
+        self.scenery_theme = "accounting"
+        self.victory_text = "ALL STAGES CLEARED!"
         self.decorated = False   # True: props, obstacles and flow-field pathfinding
     def get_enemy_spawn_type(self, elapsed_seconds: int) -> str:
         raise NotImplementedError()

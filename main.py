@@ -13,6 +13,7 @@ from weapons import WeaponSystem, WEAPONS, draw_icon
 from item_art import draw_item
 from supplies import Supplies, Food
 from accounting import update_ranged, update_boss, draw_boss_telegraph
+from ai_enemies import AI_STATS, AI_COLORS, Hydra, configure_ai, update_ai, draw_ai_warning
 from spatial import separate, CELL_SIZE
 from pathfinding import ObstacleMap, FlowField
 from animation import Animator, Effects
@@ -41,6 +42,24 @@ def load_sprite(filename: str, size=None):
             surf = pygame.transform.scale(surf, size)
         return surf
     return None
+
+
+def load_ai_sprite(filename, bounds):
+    """Trim transparent margins, then fit new artwork without distorting logos."""
+    image = load_sprite(os.path.join("ai", filename))
+    if image is None:
+        return None
+    # The supplied white logo uses a black matte rather than an alpha channel.
+    # Interpret its matte while rendering; keep the reference PNG unchanged.
+    if filename == "head_chatgpt.png":
+        image.set_colorkey((0, 0, 0))
+    rect = image.get_bounding_rect(min_alpha=8)
+    if not rect.width or not rect.height:
+        return None
+    image = image.subsurface(rect).copy()
+    scale = min(bounds[0] / rect.width, bounds[1] / rect.height)
+    return pygame.transform.scale(image, (max(1, round(rect.width * scale)),
+                                         max(1, round(rect.height * scale))))
 
 
 class Player:
@@ -143,6 +162,7 @@ class Enemy:
         self.lunge_timer = 0.0
         self.lunge_cooldown = random.uniform(0.5, 2.0)
         self.lunge_dir = (0.0, 0.0)
+        self.lunge_windup = 0.28
         self.strafe_sign = random.choice((-1, 1))
         self.strafe_timer = random.uniform(1.5, 3.0)
 
@@ -203,6 +223,8 @@ class Enemy:
             self.mass = 8.0
             self.brain = None  # BossBrain state machine, created on first update
 
+        elif enemy_type in AI_STATS:
+            configure_ai(self)
         else:
             raise ValueError(f"Unknown enemy type: {enemy_type}")
         self.max_hp = self.hp
@@ -260,7 +282,7 @@ class Enemy:
                 self.lunge_state, self.lunge_cooldown = "", random.uniform(1.8, 2.8)
             return True
         if 40 < dist < 120 and self.lunge_cooldown <= 0:
-            self.lunge_state, self.lunge_timer = "windup", 0.28
+            self.lunge_state, self.lunge_timer = "windup", self.lunge_windup
             self.lunge_dir = (dx / dist, dy / dist)
             self.facing_right = dx > 0
             return True
@@ -337,13 +359,19 @@ class Game:
             "acc_calculator": load_sprite("acc_calculator.png", (42, 42)),
             "acc_senior": load_sprite("acc_senior.png", (50, 50)),
             "acc_boss": load_sprite("acc_boss.png", (104, 104)),
+            "ai_chatgpt": load_ai_sprite("ai_chatgpt.png", (48, 52)),
+            "ai_claude": load_ai_sprite("ai_claude.png", (50, 45)),
+            "ai_gemini": load_ai_sprite("ai_gemini.png", (56, 60)),
+            "ai_hydra": load_ai_sprite("ai_hydra_body.png", (146, 106)),
         }
+        self.hydra_head_sprites = {kind: load_ai_sprite("head_" + kind + ".png", (46, 46))
+                                   for kind in AI_COLORS}
         self.stage_tiles = {"stage1_tile.png": self.stage1_tile}
 
         # Debug overlay (F3) and collision strategy (F2) for demos/benchmarks.
         self.show_debug = False
         self.collision_mode = "hash"
-        self.demo_mode = False  # F4: weapons off + invincible, for crowd demos
+        self.demo_mode = False  # F4: invincible; automatic weapons stay active
         self.frame_ms = 0.0
         self.sep_history = []
         self.effects = Effects()
@@ -365,6 +393,8 @@ class Game:
 
     def stage_tile(self):
         name = self.current_stage.ground_tile_name
+        if self.current_stage.scenery_theme == "ai" and self.scenery:
+            return self.scenery.tiles[0]
         if name not in self.stage_tiles:
             self.stage_tiles[name] = load_sprite(name, (64, 64))
         return self.stage_tiles[name]
@@ -387,7 +417,7 @@ class Game:
         self.banner_text = self.current_stage.name.upper()
         self.banner_remaining = 3.0
         self.effects.clear()
-        self.scenery = Scenery() if self.current_stage.decorated else None
+        self.scenery = Scenery(theme=self.current_stage.scenery_theme) if self.current_stage.decorated else None
         self.obstacles.set_rects([])
         self.flow.target_cell = None
         self.refresh_scenery()
@@ -460,14 +490,18 @@ class Game:
         self.add_enemy(etype, ex, ey)
 
     def add_enemy(self, etype, x, y):
-        enemy = Enemy(x, y, etype, sprite=self.enemy_sprites.get(etype))
+        if etype == "ai_hydra":
+            enemy = Hydra(x, y, self.enemy_sprites[etype], self.hydra_head_sprites)
+        else:
+            enemy = Enemy(x, y, etype, sprite=self.enemy_sprites.get(etype))
         self.obstacles.push_out(enemy)
         self.enemies.append(enemy)
         return enemy
 
     def stress_spawn(self, count):
         """Demo: add a crowd around the player, ignoring the normal enemy cap."""
-        kind = "acc_freshman" if self.current_stage.boss_type else "TA"
+        kind = ("ai_chatgpt" if self.current_stage.scenery_theme == "ai" else
+                "acc_freshman" if self.current_stage.boss_type else "TA")
         for _ in range(count):
             angle = random.uniform(0, math.tau)
             dist = random.uniform(250, 650)
@@ -479,7 +513,7 @@ class Game:
         self.boss = self.add_enemy(stage.boss_type, self.player.x + math.cos(angle) * 420,
                                    self.player.y + math.sin(angle) * 420)
         self.boss_spawned = True
-        self.banner_text = "BOSS: THE CHIEF AUDITOR"
+        self.banner_text = "BOSS: " + stage.boss_name
         self.banner_remaining = 3.0
 
     def update_stage_progress(self):
@@ -489,10 +523,27 @@ class Game:
             if not self.boss_spawned and stage_time >= stage.boss_time:
                 self.spawn_boss()
             elif self.boss_spawned and self.boss.hp <= 0:
-                self.is_victory = True
+                if self.stage_index + 1 < len(STAGES):
+                    self.player.hp = min(self.player.max_hp, self.player.hp + 30)
+                    self.start_stage(self.stage_index + 1)
+                else:
+                    self.is_victory = True
+                return True
         elif stage_time >= stage.target_time and self.stage_index + 1 < len(STAGES):
             self.player.hp = min(self.player.max_hp, self.player.hp + 30)
             self.start_stage(self.stage_index + 1)
+            return True
+        return False
+
+    def combat_targets(self):
+        """Weapons see heads; movement, contact, separation and loot see bodies."""
+        targets = []
+        for enemy in self.enemies:
+            if isinstance(enemy, Hydra):
+                targets.extend(enemy.living_heads)
+            elif enemy.hp > 0:
+                targets.append(enemy)
+        return targets
 
     def trigger_level_up(self):
         self.is_level_up = True
@@ -594,7 +645,13 @@ class Game:
             if enemy.hp > 0:
                 if enemy.is_boss:
                     # The boss state machine decides when and how it moves.
-                    update_boss(enemy, self.player, dt, self.enemy_shots, self.add_enemy)
+                    if isinstance(enemy, Hydra):
+                        enemy.brain.update(enemy, self.player, dt, self.enemy_shots, self.steer_for(enemy))
+                    else:
+                        update_boss(enemy, self.player, dt, self.enemy_shots, self.add_enemy)
+                    continue
+                if enemy.enemy_type in AI_STATS:
+                    update_ai(enemy, self.player, dt, self.enemy_shots, self.player_vel, self.steer_for(enemy))
                     continue
                 enemy.update(self.player.x, self.player.y, dt, self.steer_for(enemy))
                 if enemy.shoot_cooldown:
@@ -608,12 +665,15 @@ class Game:
         if self.obstacles.rects:
             for enemy in living:
                 self.obstacles.push_out(enemy)
-        if not self.demo_mode:
-            self.player.weapons.update(dt, self.player, self.enemies)
+        self.player.weapons.update(dt, self.player, self.combat_targets())
+        if isinstance(self.boss, Hydra):
+            self.obstacles.push_out(self.boss)
         # Hit feedback: flash + damage number whenever an enemy lost HP.
         for enemy in self.enemies:
             enemy.anim.update(enemy.x, enemy.y, dt)
-            if enemy.prev_hp is not None and enemy.hp < enemy.prev_hp:
+            if isinstance(enemy, Hydra):
+                enemy.update_feedback(dt, self.effects)
+            elif enemy.prev_hp is not None and enemy.hp < enemy.prev_hp:
                 enemy.anim.hit()
                 lost = enemy.prev_hp - max(0, enemy.hp)
                 self.effects.damage(enemy.x, enemy.y - enemy.radius - 18, lost,
@@ -634,7 +694,8 @@ class Game:
                     self.coffees.append(Coffee(enemy.x, enemy.y))
                 self.kill_count += 1
                 self.enemies.remove(enemy)
-        self.update_stage_progress()
+        if self.update_stage_progress():
+            return
         for shot in self.enemy_shots:
             shot.update(dt)
         if self.demo_mode:
@@ -730,17 +791,38 @@ class Game:
             self.screen.blit(label, (SCREEN_WIDTH-240, 96))
 
     def draw_boss_bar(self):
+        if isinstance(self.boss, Hydra):
+            self.draw_hydra_bars()
+            return
         w, h, y = 520, 16, SCREEN_HEIGHT - 46
         x = SCREEN_WIDTH // 2 - w // 2
         ratio = max(0, self.boss.hp / self.boss.max_hp)
         pygame.draw.rect(self.screen, (20, 20, 30), (x - 3, y - 3, w + 6, h + 6), border_radius=4)
         pygame.draw.rect(self.screen, (70, 25, 30), (x, y, w, h))
         pygame.draw.rect(self.screen, (60, 190, 100), (x, y, int(w * ratio), h))
-        label = self.small_font.render("THE CHIEF AUDITOR", True, COLOR_GOLD)
+        label = self.small_font.render(self.current_stage.boss_name, True, COLOR_GOLD)
         box = pygame.Rect(0, 0, label.get_width() + 16, label.get_height() + 6)
         box.midbottom = (SCREEN_WIDTH // 2, y - 4)
         pygame.draw.rect(self.screen, (20, 20, 30), box, border_radius=4)
         self.screen.blit(label, (box.x + 8, box.y + 3))
+
+    def draw_hydra_bars(self):
+        width, gap, y = 176, 10, SCREEN_HEIGHT - 42
+        start = (SCREEN_WIDTH - (3 * width + 2 * gap)) // 2
+        label = self.small_font.render(self.current_stage.boss_name, True, COLOR_GOLD)
+        label_rect = label.get_rect(midbottom=(SCREEN_WIDTH // 2, y - 25))
+        pygame.draw.rect(self.screen, (15, 20, 35), label_rect.inflate(14, 6), border_radius=4)
+        self.screen.blit(label, label_rect)
+        for index, head in enumerate(self.boss.heads):
+            x = start + index * (width + gap)
+            pygame.draw.rect(self.screen, (15, 20, 35), (x - 3, y - 22, width + 6, 43), border_radius=4)
+            pygame.draw.rect(self.screen, (65, 30, 45), (x, y, width, 15))
+            pygame.draw.rect(self.screen, AI_COLORS[head.kind],
+                             (x, y, round(width * max(0, head.hp) / head.max_hp), 15))
+            name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini"}[head.kind]
+            status = f"{name} {max(0, round(head.hp))}/{head.max_hp}" if head.hp > 0 else name + " DESTROYED"
+            text = self.small_font.render(status, True, AI_COLORS[head.kind] if head.hp > 0 else (155, 155, 170))
+            self.screen.blit(text, (x + 3, y - 18))
 
     def draw_debug_world(self):
         """Spatial-hash grid (occupied cells shaded), hit circles, flow field and boss state."""
@@ -769,6 +851,10 @@ class Game:
         for e in self.enemies:
             if e.hp > 0:
                 pygame.draw.circle(overlay, (255, 40, 40, 170), (e.x - self.camera_x, e.y - self.camera_y), e.radius, 1)
+                if isinstance(e, Hydra):
+                    for head in e.living_heads:
+                        pygame.draw.circle(overlay, (*AI_COLORS[head.kind], 210),
+                                           (head.x - self.camera_x, head.y - self.camera_y), head.radius, 2)
         self.screen.blit(overlay, (0, 0))
         if self.boss and self.boss.hp > 0 and self.boss.brain:
             label = self.font.render(self.boss.brain.state, True, (255, 80, 80))
@@ -788,7 +874,7 @@ class Game:
             (f"separation {self.separation_ms:6.2f} ms", (120, 220, 255)),
             (f"flow field BFS: {len(self.flow.dist)} cells, {self.flow.last_build_ms:.2f} ms/rebuild, rebuilds {self.flow.rebuilds}"
              if self.obstacles.rects else "flow field: off (no obstacles in this stage)", (150, 170, 255)),
-            ("[F5] spawn 300 enemies   [F4] demo mode: " + ("ON" if self.demo_mode else "off"),
+            ("[F5] spawn 300 enemies   [F4] invincible: " + ("ON" if self.demo_mode else "off"),
              (255, 200, 80) if self.demo_mode else (180, 180, 190)),
         ]
         if self.boss and self.boss.hp > 0 and self.boss.brain:
@@ -997,7 +1083,13 @@ class Game:
         for coffee in self.coffees:
             coffee.draw(self.screen, self.camera_x, self.camera_y)
         if self.boss and self.boss.hp > 0:
-            draw_boss_telegraph(self.screen, self.boss, self.camera_x, self.camera_y)
+            if isinstance(self.boss, Hydra):
+                self.boss.draw_telegraph(self.screen, self.camera_x, self.camera_y)
+            else:
+                draw_boss_telegraph(self.screen, self.boss, self.camera_x, self.camera_y)
+        for enemy in self.enemies:
+            if enemy.enemy_type in AI_STATS:
+                draw_ai_warning(self.screen, enemy, self.camera_x, self.camera_y)
 
         # Depth sorting: whatever stands lower on screen is drawn in front,
         # so characters walk behind and in front of desks correctly.
@@ -1038,7 +1130,7 @@ class Game:
             overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             overlay.fill((10, 35, 20, 200))
             self.screen.blit(overlay, (0, 0))
-            lines = [(self.title_font, "ACCOUNTING FACULTY CLEARED!", COLOR_GOLD, 230),
+            lines = [(self.title_font, self.current_stage.victory_text, COLOR_GOLD, 230),
                      (self.font, f"Time {self.timer_seconds // 60:02d}:{self.timer_seconds % 60:02d}"
                                  f"   Kills {self.kill_count}   Level {self.player.level}", COLOR_WHITE, 300),
                      (self.font, "Press [ R ] to Play Again | Press [ ESC ] to Quit", COLOR_GOLD, 350)]
@@ -1078,11 +1170,25 @@ def start_at_stage2(game):
     game.start_stage(1)
 
 
+def start_at_stage3(game):
+    """Practice the data center with a fully upgraded, three-weapon loadout."""
+    player = game.player
+    player.level = 20
+    player.exp = player.pending_level_ups = 0
+    player.exp_to_next = 5
+    for _ in range(player.level - 1):
+        player.exp_to_next = int(player.exp_to_next * 1.35) + 3
+    player.weapons.levels = {"enter": 5, "book": 5, "lan": 5}
+    game.start_stage(2)
+
+
 def main():
     game = Game()
     # python main.py --stage 2  starts directly at the Accounting Faculty.
     if "--stage" in sys.argv and sys.argv[sys.argv.index("--stage") + 1:][:1] == ["2"]:
         start_at_stage2(game)
+    elif "--stage" in sys.argv and sys.argv[sys.argv.index("--stage") + 1:][:1] == ["3"]:
+        start_at_stage3(game)
     game.run()
 
 

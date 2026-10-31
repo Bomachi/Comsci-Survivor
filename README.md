@@ -19,7 +19,8 @@ card with the mouse or **1 / 2 / 3**. Press **R** after defeat to restart, or
 | Stage | Length | Enemies |
 | --- | --- | --- |
 | 1: Ancient Cemetery | 3 minutes, then Stage 2 | TA, professor, rector |
-| 2: Accounting Faculty / ด่านบุกคณะบัญชี | Boss at 2:30, beat it to win | Accounting students and the Chief Auditor |
+| 2: Accounting Faculty / ด่านบุกคณะบัญชี | Boss at 2:30, beat it to enter Stage 3 | Accounting students and the Chief Auditor |
+| 3: AI Data Center / ศูนย์ข้อมูล AI | Boss at 3:00, destroy all three heads to win | ChatGPT robots, Claude Code creatures, Gemini robots and the AI Overlord Hydra |
 
 Clearing Stage 1 keeps your level and weapons, restores 30 HP and clears the
 field. Stage 2 enemies give more EXP:
@@ -35,13 +36,71 @@ Enemy shots use the same 0.75-second hit grace as contact damage. Practice
 Stage 2 directly with `python main.py --stage 2` (starts at level 12 with
 Enter Key L4, Project Books L3, LAN Whip L3).
 
+### Stage 3: AI Data Center
+
+Defeating the Chief Auditor keeps the same player, level, EXP and weapons,
+restores 30 HP (up to maximum), and clears enemies, shots and combat effects.
+Stage 3 has dark circuit floors, server racks and computer consoles. Its layout
+is deterministic, with open aisles and the existing flow-field pathfinding.
+
+Enemies spawn every **0.40 seconds**, compared with Stage 2's 0.55 seconds.
+The normal crowd cap remains 120; while the boss lives, the spawn interval is
+multiplied by 1.6 as in Stage 2. Enemy shot damage shares the existing
+0.75-second hit grace with contact damage.
+
+| Enemy | HP / contact damage / EXP | Behavior |
+| --- | --- | --- |
+| ChatGPT robot | 110 / 16 / 4 | Keeps about 260 px away; fires one predictive token shot (14 damage, 150 px/s) every 3.5 seconds; first shot is delayed by 1.75–3.5 seconds |
+| Claude Code creature | 90 / 18 / 4 | Fast blocky orange attacker; warns for 0.4 seconds before lunging along a locked direction |
+| Gemini robot | 180 / 24 / 7 | Warns for 0.6 seconds, then fires eight stars (16 damage each); repeats every 3 seconds |
+
+Spawn proportions (ChatGPT / Claude / Gemini) are **35/65/0%** before 0:45,
+**25/55/20%** from 0:45 to 1:45, and **20/50/30%** thereafter.
+
+The **AI Overlord Hydra** appears once at 3:00. Each head has **1,800 HP**:
+
+- **ChatGPT:** a seven-shot token fan, 18 damage per shot.
+- **Claude:** an aimed body charge, 32 contact damage.
+- **Gemini:** a sixteen-star ring, 18 damage per shot.
+
+Living heads take turns, with a **0.8-second warning** before strong attacks.
+Move around the boss to aim automatic weapons at the nearest living head or
+enemy. Every weapon can damage heads; area attacks can hit several heads.
+Heads stay attached during knockback, one Wi-Fi pulse pushes the body once,
+and Bug Army slow affects the body.
+
+Destroyed heads disappear permanently and cannot attack or be targeted again.
+Severing a head interrupts its pending attack; shots already fired remain until
+they expire. The remaining heads' rest interval falls to **85%** with two heads
+and **70%** with one. Three separate named health bars show progress. Only the
+final defeat counts as one boss kill and drops boss loot; defeating all three
+heads wins the campaign.
+
+Practice directly with:
+
+```powershell
+.\.venv\Scripts\python.exe main.py --stage 3
+```
+
+This starts at level 20 with Enter Key L5, Project Books L5 and LAN Whip L5.
+Restart returns to Stage 1, as it does in Stage 2 practice. Keyboard and optional
+hand controls are unchanged.
+
+New sprites live in `assets/sprites/ai/`. Characters, the hydra body and props
+were made with the built-in image generation tool using the supplied references;
+head artwork uses those references. Prompts and provenance are recorded in that
+folder's `prompts.json`. The game trims transparent margins and preserves aspect
+ratios when loading them. Renderer previews: `docs/stage3_look.png` and
+`docs/stage3_heads.png`.
+
 ## Debug overlay and CS systems
 
 Press **F3** in game to show the debug overlay: FPS, frame time, collision pair
 checks, the spatial-hash grid, hit circles and the boss state machine.
 **F2** switches crowd separation between the spatial hash and the naive
-O(n²) method, **F4** toggles demo mode (weapons off, invincible) so crowds
-stay on screen, and **F5** adds 300 enemies for a stress test.
+O(n²) method, **F4** toggles invincibility while automatic weapons keep firing,
+and **F5** adds 300 enemies for a stress test. Press F4 again to disable
+invincibility and resume taking damage after the existing hit grace expires.
 
 - `spatial.py`: uniform-grid spatial hash for enemy separation (~O(n)).
   Benchmark: `python benchmarks/collision_benchmark.py`.
@@ -122,6 +181,11 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   to a stage while keeping the player.
 - `accounting.py`: enemy projectiles, ranged enemy fire and the Chief Auditor's
   attack pattern.
+- `ai_enemies.py`: AI projectiles, enemy attacks and the hydra's head targets,
+  attack state machine and multipart rendering. `Game.combat_targets()` exposes
+  living heads to weapons without adding them to crowd separation or loot.
+- Stage metadata includes `boss_name`, `scenery_theme` and `victory_text` so
+  scenery, banners and the victory screen follow the current stage.
 
 ## Tests
 
@@ -130,3 +194,12 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
 ```
 
 Tests use SDL's dummy display/audio drivers and do not open a game window.
+
+Stage 3 tests cover campaign transitions, spawn phases, attack warnings and
+frame-rate consistency, all six weapons against independent heads, piercing,
+homing, AoE/knockback, severed-head interruption, pause/restart, boss loot,
+scenery and a full 185-second simulation.
+
+Known pre-existing baseline failure: `test_healing_cap_full_health_and_distance`
+in `test_supplies.py` expects food to remain when HP is full, but the existing
+supply code consumes it. This is independent of Stage 3.

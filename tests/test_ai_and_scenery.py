@@ -115,6 +115,8 @@ class GameIntegrationTests(unittest.TestCase):
         game.stress_spawn(150)
         for _ in range(120):
             game.update(1 / 30)
+            while game.is_level_up:
+                game.apply_upgrade(game.current_upgrades[0])
         for e in game.enemies:
             for rect in game.obstacles.nearby(e.x, e.y, 0):
                 self.assertFalse(rect.inflate(-4, -4).collidepoint(e.x, e.y))

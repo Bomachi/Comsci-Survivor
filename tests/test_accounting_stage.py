@@ -11,7 +11,7 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 from accounting import BossBrain, EnemyShot
 from main import Enemy, Game, Player
-from stages import Stage2
+from stages import Stage2, Stage3
 
 
 class AccountingStageTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class AccountingStageTests(unittest.TestCase):
         self.assertEqual(game.player.hp, 88)
         self.assertGreater(game.player.hurt_remaining, 0)
 
-    def test_boss_spawns_once_attacks_and_victory(self):
+    def test_boss_spawns_once_attacks_and_advances(self):
         game = self.game
         game.start_stage(1)
         game.player.hp = game.player.max_hp = 10 ** 6
@@ -96,9 +96,10 @@ class AccountingStageTests(unittest.TestCase):
 
         boss.hp = 0
         game.update(0.1)
-        self.assertTrue(game.is_victory)
+        self.assertFalse(game.is_victory)
+        self.assertIsInstance(game.current_stage, Stage3)
         self.assertNotIn(boss, game.enemies)
-        game.update(0.1)                             # frozen after victory
+        game.update(0.1)
         game.render()
 
     def test_stage2_full_run_smoke(self):

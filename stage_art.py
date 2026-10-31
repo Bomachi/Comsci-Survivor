@@ -24,6 +24,10 @@ PROP_TYPES = {
     "plant": (1.1, (0.25, 0.7, 0.5, 0.28)),
 }
 DECOR_TYPES = {"coins": 1.3}
+AI_PROP_TYPES = {
+    "ai_server": ((72, 102), (0.06, 0.62, 0.88, 0.36)),
+    "ai_terminal": ((96, 72), (0.06, 0.60, 0.88, 0.38)),
+}
 
 
 def _marble_tile(seed):
@@ -59,7 +63,27 @@ def build_tiles(count=6):
     return tiles, accent
 
 
-def draw_floor(screen, tiles, accent, cam_x, cam_y):
+def build_ai_tiles(count=6):
+    """Code-native circuit floor; no external texture is needed at runtime."""
+    tiles = []
+    for i in range(count):
+        rng = random.Random(7919 * i + 3)
+        tile = pygame.Surface((TILE, TILE))
+        tile.fill((17 + i % 3, 25 + i % 2, 43 + i % 4))
+        pygame.draw.rect(tile, (32, 47, 68), tile.get_rect(), 1)
+        for _ in range(2):
+            x, y = rng.randrange(10, 50), rng.randrange(12, 50)
+            color = rng.choice([(28, 80, 95), (35, 59, 110), (32, 94, 88)])
+            pygame.draw.lines(tile, color, False, [(0, y), (x, y), (x, 0)], 1)
+            pygame.draw.circle(tile, (50, 139, 151), (x, y), 2, 1)
+        tiles.append(tile)
+    accent = tiles[0].copy()
+    pygame.draw.rect(accent, (44, 112, 140), (23, 23, 18, 18), 2)
+    pygame.draw.rect(accent, (38, 63, 94), (27, 27, 10, 10))
+    return tiles, accent
+
+
+def draw_floor(screen, tiles, accent, cam_x, cam_y, theme="accounting"):
     w, h = screen.get_size()
     c0, c1 = int(cam_x // TILE) - 1, int((cam_x + w) // TILE) + 1
     r0, r1 = int(cam_y // TILE) - 1, int((cam_y + h) // TILE) + 1
@@ -70,6 +94,8 @@ def draw_floor(screen, tiles, accent, cam_x, cam_y):
             else:
                 tile = tiles[(c * 73856093 ^ r * 19349663) % len(tiles)]
             screen.blit(tile, (c * TILE - int(cam_x), r * TILE - int(cam_y)))
+    if theme == "ai":
+        return
     # A green carpet runner every 8 rows gives the hall some structure.
     for r in range(r0, r1 + 1):
         if r % 8 == 4:
@@ -96,16 +122,25 @@ class Prop:
 
 
 class Scenery:
-    def __init__(self, seed=2026):
+    def __init__(self, seed=2026, theme="accounting"):
         self.seed = seed
+        self.theme = theme
         self.images = {}
-        for name, (scale, _) in {**PROP_TYPES, **{k: (v, None) for k, v in DECOR_TYPES.items()}}.items():
-            path = os.path.join(PROP_DIR, name + ".png")
+        self.prop_types = AI_PROP_TYPES if theme == "ai" else PROP_TYPES
+        image_types = self.prop_types if theme == "ai" else {**PROP_TYPES, **{k: (v, None) for k, v in DECOR_TYPES.items()}}
+        for name, (scale, _) in image_types.items():
+            folder = os.path.join(BASE_DIR, "assets", "sprites", "ai") if theme == "ai" else PROP_DIR
+            path = os.path.join(folder, name + ".png")
             if os.path.exists(path):
                 img = pygame.image.load(path).convert_alpha()
-                self.images[name] = pygame.transform.scale(
-                    img, (round(img.get_width() * scale), round(img.get_height() * scale)))
-        self.tiles, self.accent = build_tiles()
+                if theme == "ai":
+                    img = img.subsurface(img.get_bounding_rect(min_alpha=8)).copy()
+                    factor = min(scale[0] / img.get_width(), scale[1] / img.get_height())
+                    size = (max(1, round(img.get_width() * factor)), max(1, round(img.get_height() * factor)))
+                else:
+                    size = (round(img.get_width() * scale), round(img.get_height() * scale))
+                self.images[name] = pygame.transform.scale(img, size)
+        self.tiles, self.accent = build_ai_tiles() if theme == "ai" else build_tiles()
         self.chunks = {}
         self.vignette = None
         self.dust = [[random.uniform(0, 1000), random.uniform(0, 700), random.uniform(6, 16), random.uniform(0, math.tau)]
@@ -113,6 +148,8 @@ class Scenery:
 
     def _make_chunk(self, cx, cy):
         rng = random.Random((cx * 92837111) ^ (cy * 689287499) ^ self.seed)
+        if self.theme == "ai":
+            return self._make_ai_chunk(cx, cy, rng)
         props = []
         kinds = [k for k in PROP_TYPES if k in self.images]
         if not kinds:
@@ -149,6 +186,23 @@ class Scenery:
                     props.append(Prop("coins", self.images["coins"], x, y))
         return props
 
+    def _make_ai_chunk(self, cx, cy, rng):
+        props = []
+        # Widely separated racks leave continuous aisles for the 88px-wide boss.
+        spots = [("ai_server", x, y) for x in (120, 520) for y in (180, 510)]
+        spots.append(("ai_terminal", 320 + rng.randint(-30, 30), 345))
+        for kind, ox, oy in spots:
+            x, y = cx * CHUNK + ox, cy * CHUNK + oy
+            if kind not in self.images or math.hypot(x, y) < SAFE_RADIUS:
+                continue
+            img = self.images[kind]
+            fx, fy, fw, fh = self.prop_types[kind][1]
+            left, top = x - img.get_width() / 2, y - img.get_height()
+            solid = pygame.Rect(round(left + fx * img.get_width()), round(top + fy * img.get_height()),
+                                round(fw * img.get_width()), round(fh * img.get_height()))
+            props.append(Prop(kind, img, x, y, solid))
+        return props
+
     def update(self, px, py, radius=1):
         """Keep chunks around the player; returns True when the solid set changed."""
         pcx, pcy = int(px // CHUNK), int(py // CHUNK)
@@ -174,7 +228,7 @@ class Scenery:
         return [p for p in self.props() if view.colliderect(p.rect)]
 
     def draw_floor(self, screen, cam_x, cam_y):
-        draw_floor(screen, self.tiles, self.accent, cam_x, cam_y)
+        draw_floor(screen, self.tiles, self.accent, cam_x, cam_y, self.theme)
         # Floor decor (coins) is flat: draw it under everything.
         for p in self.visible(cam_x, cam_y, *screen.get_size()):
             if not p.solid:
@@ -186,7 +240,8 @@ class Scenery:
             mote[3] += dt * 0.6
             mote[0] = (mote[0] + math.cos(mote[3]) * mote[2] * dt) % w
             mote[1] = (mote[1] - mote[2] * dt * 0.5) % h
-            pygame.draw.rect(screen, (255, 255, 240), (mote[0], mote[1], 2, 2))
+            color = (70, 165, 200) if self.theme == "ai" else (255, 255, 240)
+            pygame.draw.rect(screen, color, (mote[0], mote[1], 2, 2))
         if self.vignette is None or self.vignette.get_size() != (w, h):
             self.vignette = _radial_vignette(w, h)
         screen.blit(self.vignette, (0, 0))

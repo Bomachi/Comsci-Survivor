@@ -11,6 +11,7 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 import pygame
 from main import Coffee, Enemy, Game, Gem, Player
+from accounting import EnemyShot
 from upgrades import apply_upgrade, available_upgrades
 from weapons import MAX_LEVEL, MAX_PROJECTILES, Projectile, WEAPONS
 
@@ -210,6 +211,28 @@ class GameTests(unittest.TestCase):
         game.update()
         self.assertTrue(game.is_game_over)
         self.assertFalse(game.is_level_up)
+
+    def test_f4_keeps_weapons_firing_and_blocks_damage_until_disabled(self):
+        game = self.game
+        enemy = Enemy(0, 0)
+        enemy.hp = enemy.max_hp = enemy.prev_hp = 1000
+        enemy.speed = 0
+        game.enemies.append(enemy)
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F4))
+        game.handle_events()
+        self.assertTrue(game.demo_mode)
+        game.enemy_shots.append(EnemyShot(0, 0, 0, 12, speed=0))
+        game.update(0.1)
+        self.assertLess(enemy.hp, enemy.max_hp)
+        self.assertEqual(game.player.hp, game.player.max_hp)
+        self.assertFalse(game.is_game_over)
+
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F4))
+        game.handle_events()
+        self.assertFalse(game.demo_mode)
+        for _ in range(8):
+            game.update(0.1)
+        self.assertEqual(game.player.hp, game.player.max_hp - 12)
 
     def test_stage_spawn_types_at_boundaries(self):
         for time in (0, 59, 60, 119, 120, 180):
