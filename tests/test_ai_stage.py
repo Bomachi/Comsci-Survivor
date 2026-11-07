@@ -11,7 +11,6 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 import pygame
 
-from accounting import EnemyShot
 from ai_enemies import Hydra, AIShot, MAX_AI_SHOTS, fire_ring, update_ai
 from main import Enemy, Game, Player, start_at_stage3
 from stages import Stage2, Stage3
@@ -191,7 +190,7 @@ class AIStageIntegrationTests(unittest.TestCase):
         self.game.show_debug = False
         self.game.reset_game()
 
-    def test_stage2_clear_preserves_progress_and_heals(self):
+    def test_killing_the_stage2_boss_does_not_end_the_stage(self):
         game = self.game
         game.start_stage(1)
         game.player.hp = 40
@@ -200,16 +199,15 @@ class AIStageIntegrationTests(unittest.TestCase):
         player = game.player
         game.spawn_boss()
         game.boss.hp = 0
-        game.enemy_shots.append(EnemyShot(0, 0, 0, 99))
         game.update(0)
-        self.assertIsInstance(game.current_stage, Stage3)
+        self.assertIsInstance(game.current_stage, Stage2)   # no chaining to Stage 3
         self.assertIs(game.player, player)
-        self.assertEqual((player.hp, player.level, player.exp), (70, 17, 9))
+        self.assertEqual((player.hp, player.level, player.exp), (40, 17, 9))   # no free heal
         self.assertEqual(player.weapons.levels, {"enter": 5, "wifi": 4})
-        self.assertFalse(game.enemy_shots)
-        self.assertFalse(game.enemies)
         self.assertFalse(game.is_victory)
-        self.assertEqual(game.stage_seconds, 0)
+        game.elapsed_seconds = game.stage_start_seconds + game.current_stage.duration
+        game.update(0)
+        self.assertTrue(game.is_victory)
 
     def test_heads_are_targets_but_not_crowd_members(self):
         game = self.game
@@ -229,7 +227,7 @@ class AIStageIntegrationTests(unittest.TestCase):
         shot = game.player.weapons.projectiles[0]
         self.assertAlmostEqual(shot.angle, 0)
 
-    def test_boss_once_partial_kills_then_victory_and_one_loot_drop(self):
+    def test_boss_once_partial_kills_one_loot_drop_then_victory_on_time(self):
         game = self.game
         game.start_stage(2)
         game.demo_mode = True
@@ -246,10 +244,13 @@ class AIStageIntegrationTests(unittest.TestCase):
             self.assertFalse(game.supplies.foods)
         boss.heads[2].hp = 0
         game.update(0)
-        self.assertTrue(game.is_victory)
+        self.assertFalse(game.is_victory)          # boss dead, but the stage timer is not up
         self.assertEqual(game.kill_count, 1)
         self.assertEqual(len(game.supplies.foods), 1)
         self.assertNotIn(boss, game.enemies)
+        game.elapsed_seconds = game.stage_start_seconds + game.current_stage.duration
+        game.update(0)
+        self.assertTrue(game.is_victory)
         game.update(1)
         self.assertEqual(game.kill_count, 1)
         game.render()

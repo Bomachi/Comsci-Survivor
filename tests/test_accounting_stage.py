@@ -11,7 +11,7 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 from accounting import BossBrain, EnemyShot
 from main import Enemy, Game, Player
-from stages import Stage2, Stage3
+from stages import Stage1, Stage2
 
 
 class AccountingStageTests(unittest.TestCase):
@@ -33,18 +33,19 @@ class AccountingStageTests(unittest.TestCase):
             if self.game.is_level_up:
                 self.game.apply_upgrade(self.game.current_upgrades[0])
 
-    def test_stage1_clear_moves_to_stage2_and_keeps_player(self):
+    def test_stage1_is_won_after_its_full_duration_and_does_not_chain(self):
         game = self.game
         game.player.hp = game.player.max_hp = 10 ** 6
-        game.player.weapons.levels = {"enter": 3}
         player = game.player
-        game.elapsed_seconds = game.current_stage.target_time - 0.05
+        self.assertIsInstance(game.current_stage, Stage1)
+        game.elapsed_seconds = game.current_stage.duration - 1
         game.update(0.1)
-        self.assertIsInstance(game.current_stage, Stage2)
+        self.assertFalse(game.is_victory)
+        game.elapsed_seconds = game.current_stage.duration - 0.05
+        game.update(0.1)
+        self.assertTrue(game.is_victory)
+        self.assertIsInstance(game.current_stage, Stage1)   # winning ends the run
         self.assertIs(game.player, player)
-        self.assertEqual(game.player.weapons.levels["enter"], 3)
-        self.assertFalse(game.player.weapons.projectiles)
-        self.assertEqual(game.stage_seconds, 0)
 
     def test_stage2_spawns_only_accounting_enemies(self):
         stage = Stage2()
@@ -65,7 +66,7 @@ class AccountingStageTests(unittest.TestCase):
         self.assertEqual(game.player.hp, 88)
         self.assertGreater(game.player.hurt_remaining, 0)
 
-    def test_boss_spawns_once_attacks_and_advances(self):
+    def test_boss_spawns_once_attacks_and_stage_continues(self):
         game = self.game
         game.start_stage(1)
         game.player.hp = game.player.max_hp = 10 ** 6
@@ -96,8 +97,8 @@ class AccountingStageTests(unittest.TestCase):
 
         boss.hp = 0
         game.update(0.1)
-        self.assertFalse(game.is_victory)
-        self.assertIsInstance(game.current_stage, Stage3)
+        self.assertFalse(game.is_victory)                   # the stage timer decides the win
+        self.assertIsInstance(game.current_stage, Stage2)   # and nothing chains to Stage 3
         self.assertNotIn(boss, game.enemies)
         game.update(0.1)
         game.render()

@@ -516,16 +516,22 @@ class Game:
         self.banner_text = "BOSS: " + stage.boss_name
         self.banner_remaining = 3.0
 
-        def update_stage_progress(self):
-            stage = self.current_stage
-            stage_time = self.elapsed_seconds - self.stage_start_seconds
-            if stage.boss_type and not self.boss_spawned and stage_time >= stage.boss_time:
-                self.spawn_boss()
-            boss_alive = self.boss_spawned and self.boss is not None and self.boss.hp > 0
-            if stage_time >= stage.duration and not boss_alive:
-                self.is_victory = True
-                return True
-            return False
+    def update_stage_progress(self):
+        """Spawn the stage boss on schedule and win the stage once its time is up.
+
+        A stage is won when its full duration has passed AND any boss that has
+        appeared is defeated. Winning ends the run (it does not chain into the
+        next stage).
+        """
+        stage = self.current_stage
+        stage_time = self.elapsed_seconds - self.stage_start_seconds
+        if stage.boss_type and not self.boss_spawned and stage_time >= stage.boss_time:
+            self.spawn_boss()
+        boss_alive = self.boss_spawned and self.boss is not None and self.boss.hp > 0
+        if stage_time >= stage.duration and not boss_alive:
+            self.is_victory = True
+            return True
+        return False
 
     def combat_targets(self):
         """Weapons see heads; movement, contact, separation and loot see bodies."""
@@ -686,16 +692,8 @@ class Game:
                     self.coffees.append(Coffee(enemy.x, enemy.y))
                 self.kill_count += 1
                 self.enemies.remove(enemy)
-        def update_stage_progress(self):
-            stage = self.current_stage
-            stage_time = self.elapsed_seconds - self.stage_start_seconds
-            if stage.boss_type and not self.boss_spawned and stage_time >= stage.boss_time:
-                self.spawn_boss()
-            boss_alive = self.boss_spawned and self.boss is not None and self.boss.hp > 0
-            if stage_time >= stage.duration and not boss_alive:
-                self.is_victory = True
-                return True
-            return False
+        if self.update_stage_progress():
+            return
         for shot in self.enemy_shots:
             shot.update(dt)
         if self.demo_mode:
