@@ -516,24 +516,16 @@ class Game:
         self.banner_text = "BOSS: " + stage.boss_name
         self.banner_remaining = 3.0
 
-    def update_stage_progress(self):
-        stage = self.current_stage
-        stage_time = self.elapsed_seconds - self.stage_start_seconds
-        if stage.boss_type:
-            if not self.boss_spawned and stage_time >= stage.boss_time:
+        def update_stage_progress(self):
+            stage = self.current_stage
+            stage_time = self.elapsed_seconds - self.stage_start_seconds
+            if stage.boss_type and not self.boss_spawned and stage_time >= stage.boss_time:
                 self.spawn_boss()
-            elif self.boss_spawned and self.boss.hp <= 0:
-                if self.stage_index + 1 < len(STAGES):
-                    self.player.hp = min(self.player.max_hp, self.player.hp + 30)
-                    self.start_stage(self.stage_index + 1)
-                else:
-                    self.is_victory = True
+            boss_alive = self.boss_spawned and self.boss is not None and self.boss.hp > 0
+            if stage_time >= stage.duration and not boss_alive:
+                self.is_victory = True
                 return True
-        elif stage_time >= stage.target_time and self.stage_index + 1 < len(STAGES):
-            self.player.hp = min(self.player.max_hp, self.player.hp + 30)
-            self.start_stage(self.stage_index + 1)
-            return True
-        return False
+            return False
 
     def combat_targets(self):
         """Weapons see heads; movement, contact, separation and loot see bodies."""
@@ -694,8 +686,16 @@ class Game:
                     self.coffees.append(Coffee(enemy.x, enemy.y))
                 self.kill_count += 1
                 self.enemies.remove(enemy)
-        if self.update_stage_progress():
-            return
+        def update_stage_progress(self):
+            stage = self.current_stage
+            stage_time = self.elapsed_seconds - self.stage_start_seconds
+            if stage.boss_type and not self.boss_spawned and stage_time >= stage.boss_time:
+                self.spawn_boss()
+            boss_alive = self.boss_spawned and self.boss is not None and self.boss.hp > 0
+            if stage_time >= stage.duration and not boss_alive:
+                self.is_victory = True
+                return True
+            return False
         for shot in self.enemy_shots:
             shot.update(dt)
         if self.demo_mode:
@@ -765,7 +765,9 @@ class Game:
 
         mins = self.timer_seconds // 60
         secs = self.timer_seconds % 60
-        time_txt = self.font.render(f"TIME: {mins:02d}:{secs:02d}", True, COLOR_WHITE)
+        total = self.current_stage.duration
+        time_txt = self.font.render(f"TIME: {mins:02d}:{secs:02d} / {total // 60:02d}:{total % 60:02d}",
+                                    True, COLOR_WHITE)
         self.screen.blit(time_txt, (SCREEN_WIDTH // 2 - time_txt.get_width() // 2, bar_h + 10))
 
         kill_txt = self.font.render(f"KILLS: {self.kill_count}", True, (240, 90, 90))

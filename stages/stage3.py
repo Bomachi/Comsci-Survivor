@@ -8,7 +8,7 @@ class Stage3(BaseStage):
     BOSS_TIME = 180
 
     def __init__(self):
-        super().__init__("Stage 3: AI Data Center", self.BOSS_TIME, "stage3_tile.png")
+        super().__init__("Stage 3: AI Data Center", "stage3_tile.png")
         self.spawn_interval = 0.40
         self.boss_type = "ai_hydra"
         self.boss_time = self.BOSS_TIME

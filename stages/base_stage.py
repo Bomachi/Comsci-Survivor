@@ -1,7 +1,10 @@
+STAGE_DURATION_SECONDS = 20 * 60
+
+
 class BaseStage:
-    def __init__(self, name: str, target_time_seconds: int, ground_tile_name: str):
+    def __init__(self, name: str, ground_tile_name: str, duration_seconds: int = STAGE_DURATION_SECONDS):
         self.name = name
-        self.target_time = target_time_seconds
+        self.duration = duration_seconds
         self.ground_tile_name = ground_tile_name
         # Optional per-stage settings; stages override what they need.
         self.spawn_interval = 2/3
@@ -9,7 +12,7 @@ class BaseStage:
         self.boss_time = None
         self.boss_name = ""
         self.scenery_theme = "accounting"
-        self.victory_text = "ALL STAGES CLEARED!"
+        self.victory_text = "STAGE CLEARED!"
         self.decorated = False   # True: props, obstacles and flow-field pathfinding
     def get_enemy_spawn_type(self, elapsed_seconds: int) -> str:
         raise NotImplementedError()

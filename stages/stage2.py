@@ -10,9 +10,9 @@ class Stage2(BaseStage):
     def __init__(self):
         super().__init__(
             name="Stage 2: Accounting Faculty",
-            target_time_seconds=self.BOSS_TIME,
             ground_tile_name="stage2_tile.png"
         )
+        self.victory_text = "ACCOUNTING FACULTY CLEARED!"
         self.spawn_interval = 0.55
         self.boss_type = "acc_boss"
         self.boss_time = self.BOSS_TIME
