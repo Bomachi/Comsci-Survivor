@@ -2,6 +2,7 @@ import os
 import sys
 import math
 import random
+from enum import Enum
 import pygame
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -17,7 +18,7 @@ from ai_enemies import AI_STATS, AI_COLORS, Hydra, configure_ai, update_ai, draw
 from spatial import separate, CELL_SIZE
 from pathfinding import ObstacleMap, FlowField
 from animation import Animator, Effects
-from stage_art import Scenery
+from stage_art import Scenery, build_tiles, build_ai_tiles
 from hand_control import HandController
 import time
 
@@ -32,6 +33,62 @@ COLOR_EXP = (52, 152, 219)
 COLOR_GOLD = (255, 215, 0)
 COLOR_CARD_BG = (35, 30, 50)
 COLOR_CARD_BORDER = (100, 90, 130)
+
+
+class GameState(Enum):
+    """Which screen is active. Game over and victory stay as Game flags."""
+    MAIN_MENU = 1
+    PLAYING = 2
+    PAUSED = 3
+    STAGE_SELECT = 4
+
+
+# Enemies drawn on each stage card of the stage-select screen (same order as STAGES).
+STAGE_PREVIEW_ENEMIES = (
+    ("TA", "professor", "rector"),
+    ("acc_freshman", "acc_calculator", "acc_senior"),
+    ("ai_chatgpt", "ai_claude", "ai_gemini"),
+)
+
+
+class Button:
+    """Clickable image button used by the main menu and the pause menu."""
+
+    def __init__(self, x, y, width, height, text="", font=None, bg_color=(40, 40, 50),
+                 hover_color=(70, 70, 90), text_color=(255, 255, 255), image=None):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = font
+        self.bg_color = bg_color
+        self.hover_color = hover_color
+        self.text_color = text_color
+        self.is_hovered = False
+        # Scale once here instead of on every frame.
+        self.image = pygame.transform.scale(image, self.rect.size) if image else None
+        self.hover_overlay = None
+        if self.image:
+            self.hover_overlay = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+            self.hover_overlay.fill((255, 255, 255, 45))
+
+    def update(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+
+    def draw(self, surface):
+        if self.image:
+            surface.blit(self.image, self.rect)
+            if self.is_hovered:
+                surface.blit(self.hover_overlay, self.rect.topleft)
+        else:
+            color = self.hover_color if self.is_hovered else self.bg_color
+            pygame.draw.rect(surface, color, self.rect, border_radius=10)
+            pygame.draw.rect(surface, (200, 200, 200), self.rect, width=2, border_radius=10)
+            if self.font and self.text:
+                txt_surf = self.font.render(self.text, True, self.text_color)
+                surface.blit(txt_surf, txt_surf.get_rect(center=self.rect.center))
+
+    def is_clicked(self, event):
+        return (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self.rect.collidepoint(event.pos))
 
 
 def load_sprite(filename: str, size=None):
@@ -329,11 +386,11 @@ class Coffee:
 
 
 class Game:
-    def __init__(self):
+    def __init__(self, start_in_menu=False):
         pygame.init()
         pygame.font.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Classroom Survivor - Pygame Edition")
+        pygame.display.set_caption("Comsci Survivor")
         self.clock = pygame.time.Clock()
 
         font_path = os.path.join(BASE_DIR, "assets", "fonts", "Minecraft.ttf")
@@ -388,6 +445,30 @@ class Game:
 
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
+
+        # Main menu and pause menu.
+        self.menu_bg = load_sprite("main_menu_background.jpg", (SCREEN_WIDTH, SCREEN_HEIGHT))
+        button_x = SCREEN_WIDTH // 2 - 110
+        def make_button(y, text, image_name):
+            return Button(button_x, y, 220, 60, text, self.font, image=load_sprite(image_name, (220, 60)))
+        self.btn_start = make_button(480, "START GAME", "start_game_button.png")
+        self.btn_quit = make_button(560, "QUIT", "quit_button.png")
+        self.btn_resume = make_button(250, "RESUME", "resume_button.png")
+        self.btn_restart = make_button(330, "RESTART", "restart_button.png")
+        self.btn_main_menu = make_button(410, "MAIN MENU", "main_menu_button.png")
+        self.btn_stage_back = make_button(610, "MAIN MENU", "main_menu_button.png")
+        self.btn_victory_menu = make_button(430, "MAIN MENU", "main_menu_button.png")
+
+        # Stage-select cards use the same frame art as the level-up cards.
+        card_w, card_h, gap = 240, 300, 25
+        first_x = (SCREEN_WIDTH - (len(STAGES) * card_w + (len(STAGES) - 1) * gap)) // 2
+        self.stage_card_rects = [pygame.Rect(first_x + i * (card_w + gap), 190, card_w, card_h)
+                                 for i in range(len(STAGES))]
+        self.stage_previews = [self.build_stage_preview(i) for i in range(len(STAGES))]
+        self.selected_stage = 0     # the stage chosen on the select screen; Restart replays it
+        # Tests and headless runs build Game() directly and expect to be playing;
+        # only main() asks for the menu.
+        self.state = GameState.MAIN_MENU if start_in_menu else GameState.PLAYING
 
         self.reset_game()
 
@@ -478,7 +559,7 @@ class Game:
         self.pair_stats = None
         self.separation_ms = 0.0
         self.is_running = True
-        self.start_stage(0)
+        self.start_stage(self.selected_stage)
 
     def spawn_enemy(self):
         angle = random.uniform(0, math.tau)
@@ -571,39 +652,114 @@ class Game:
         else:
             self.is_level_up = False
 
+    def menu_buttons(self):
+        """Buttons that are visible (and clickable) in the current state."""
+        if self.state == GameState.MAIN_MENU:
+            return (self.btn_start, self.btn_quit)
+        if self.state == GameState.STAGE_SELECT:
+            return (self.btn_stage_back,)
+        if self.state == GameState.PAUSED:
+            return (self.btn_resume, self.btn_restart, self.btn_main_menu)
+        if self.state == GameState.PLAYING and self.is_victory:
+            return (self.btn_victory_menu,)
+        return ()
+
     def handle_events(self):
+        mouse_pos = pygame.mouse.get_pos()
+        for button in self.menu_buttons():
+            button.update(mouse_pos)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.is_running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.is_running = False
-                elif event.key == pygame.K_F3:
-                    self.show_debug = not self.show_debug
-                elif event.key == pygame.K_F2:
-                    self.collision_mode = "naive" if self.collision_mode == "hash" else "hash"
-                    self.sep_history.clear()
-                elif event.key == pygame.K_F7:
-                    self.hand.toggle()
-                elif event.key == pygame.K_F4:
-                    self.demo_mode = not self.demo_mode
-                elif event.key == pygame.K_F5 and not (self.is_level_up or self.is_game_over or self.is_victory):
-                    self.stress_spawn(300)
-                elif self.is_level_up and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
-                    index = event.key - pygame.K_1
-                    if index < len(self.current_upgrades):
-                        self.apply_upgrade(self.current_upgrades[index])
-                elif event.key == pygame.K_r and (self.is_game_over or self.is_victory):
-                    self.reset_game()
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
-                mx, my = event.pos
-                for idx, rect in enumerate(self.upgrade_rects):
-                    if rect.collidepoint(mx, my):
-                        self.apply_upgrade(self.current_upgrades[idx])
-                        break
+            elif self.state == GameState.MAIN_MENU:
+                self.handle_main_menu_event(event)
+            elif self.state == GameState.STAGE_SELECT:
+                self.handle_stage_select_event(event)
+            elif self.state == GameState.PAUSED:
+                self.handle_pause_event(event)
+            else:
+                self.handle_play_event(event)
+
+    def handle_main_menu_event(self, event):
+        if self.btn_start.is_clicked(event):
+            self.state = GameState.STAGE_SELECT
+        elif self.btn_quit.is_clicked(event):
+            self.is_running = False
+
+    def start_run(self, stage_index):
+        """Begin a fresh run on the chosen stage."""
+        self.selected_stage = stage_index
+        self.reset_game()
+        self.state = GameState.PLAYING
+
+    def go_to_main_menu(self):
+        self.state = GameState.MAIN_MENU
+
+    def handle_stage_select_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.go_to_main_menu()
+            elif pygame.K_1 <= event.key < pygame.K_1 + len(STAGES):
+                self.start_run(event.key - pygame.K_1)
+        elif self.btn_stage_back.is_clicked(event):
+            self.go_to_main_menu()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for index, rect in enumerate(self.stage_card_rects):
+                if rect.collidepoint(event.pos):
+                    self.start_run(index)
+                    break
+
+    def handle_pause_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.state = GameState.PLAYING
+        elif self.btn_resume.is_clicked(event):
+            self.state = GameState.PLAYING
+        elif self.btn_restart.is_clicked(event):
+            self.reset_game()
+            self.state = GameState.PLAYING
+        elif self.btn_main_menu.is_clicked(event):
+            self.go_to_main_menu()
+
+    def handle_play_event(self, event):
+        if self.is_victory and self.btn_victory_menu.is_clicked(event):
+            self.go_to_main_menu()
+            return
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                if self.is_victory:
+                    self.go_to_main_menu()
+                elif self.is_game_over:
+                    self.is_running = False   # matches the on-screen "[ ESC ] to Quit"
+                else:
+                    self.state = GameState.PAUSED
+            elif event.key == pygame.K_RETURN and self.is_victory:
+                self.go_to_main_menu()
+            elif event.key == pygame.K_F3:
+                self.show_debug = not self.show_debug
+            elif event.key == pygame.K_F2:
+                self.collision_mode = "naive" if self.collision_mode == "hash" else "hash"
+                self.sep_history.clear()
+            elif event.key == pygame.K_F7:
+                self.hand.toggle()
+            elif event.key == pygame.K_F4:
+                self.demo_mode = not self.demo_mode
+            elif event.key == pygame.K_F5 and not (self.is_level_up or self.is_game_over or self.is_victory):
+                self.stress_spawn(300)
+            elif self.is_level_up and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                index = event.key - pygame.K_1
+                if index < len(self.current_upgrades):
+                    self.apply_upgrade(self.current_upgrades[index])
+            elif event.key == pygame.K_r and (self.is_game_over or self.is_victory):
+                self.reset_game()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
+            mx, my = event.pos
+            for idx, rect in enumerate(self.upgrade_rects):
+                if rect.collidepoint(mx, my):
+                    self.apply_upgrade(self.current_upgrades[idx])
+                    break
 
     def update(self, dt=1/FPS):
-        if self.is_game_over or self.is_level_up or self.is_victory:
+        if self.state != GameState.PLAYING or self.is_game_over or self.is_level_up or self.is_victory:
             return
         # A stalled window must not jump the simulation several seconds ahead.
         dt = min(max(dt, 0), 0.1)
@@ -708,6 +864,8 @@ class Game:
             if damage:
                 self.player.hp = max(0, self.player.hp-damage)
                 self.player.hurt_remaining = 0.75
+                self.effects.damage(self.player.x, self.player.y - self.player.radius - 18,
+                                    damage, (255, 70, 70))
                 if self.player.hp <= 0:
                     self.is_game_over = True
                     return
@@ -752,9 +910,9 @@ class Game:
             self.screen.fill((24, 20, 34))
 
     def draw_hud(self):
-        bar_h = 12
+        bar_h = 14
         pygame.draw.rect(self.screen, (28, 30, 45), (0, bar_h, SCREEN_WIDTH, 35))
-        ratio = min(1.0, self.player.exp / self.player.exp_to_next)
+        ratio = min(1.0, self.player.exp / self.player.exp_to_next) if self.player.exp_to_next > 0 else 0
         pygame.draw.rect(self.screen, (20, 20, 30), (0, 0, SCREEN_WIDTH, bar_h))
         pygame.draw.rect(self.screen, COLOR_EXP, (0, 0, int(SCREEN_WIDTH * ratio), bar_h))
 
@@ -905,7 +1063,7 @@ class Game:
         to choose it. Game over / victory: hold a fist to restart.
         """
         hand = self.hand
-        if hand.status != "tracking" or not hand.landmarks:
+        if self.state != GameState.PLAYING or hand.status != "tracking" or not hand.landmarks:
             self.hand_pick_index, self.hand_hold = None, 0.0
             return
         if not hand.fist:
@@ -1074,7 +1232,100 @@ class Game:
             pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx - 15, cy), (cx + 15, cy), 7)
             pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx, cy - 15), (cx, cy + 15), 7)
 
+    def draw_main_menu(self):
+        if self.menu_bg:
+            self.screen.blit(self.menu_bg, (0, 0))
+        else:
+            self.draw_background()
+            title = self.title_font.render("COMSCI SURVIVOR", True, COLOR_GOLD)
+            self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 180))
+        self.btn_start.draw(self.screen)
+        self.btn_quit.draw(self.screen)
+
+    def build_stage_preview(self, index):
+        """Ground tiles of a stage with its enemies standing on them (card artwork)."""
+        stage = STAGES[index]()
+        size = (200, 96)
+        preview = pygame.Surface(size)
+        if stage.decorated:      # decorated stages draw their ground from generated tiles
+            tile = (build_ai_tiles() if stage.scenery_theme == "ai" else build_tiles())[0][0]
+        else:
+            tile = load_sprite(stage.ground_tile_name, (64, 64))
+        if tile is None:
+            preview.fill((40, 40, 60))
+        else:
+            for x in range(0, size[0], tile.get_width()):
+                for y in range(0, size[1], tile.get_height()):
+                    preview.blit(tile, (x, y))
+        names = STAGE_PREVIEW_ENEMIES[index] if index < len(STAGE_PREVIEW_ENEMIES) else ()
+        sprites = [self.enemy_sprites.get(name) for name in names]
+        sprites = [sprite for sprite in sprites if sprite]
+        sprites = [pygame.transform.smoothscale(
+                       sprite, (max(1, round(sprite.get_width() * 48 / sprite.get_height())), 48))
+                   if sprite.get_height() > 48 else sprite for sprite in sprites]
+        x = (size[0] - sum(sprite.get_width() + 8 for sprite in sprites) + 8) // 2
+        for sprite in sprites:
+            preview.blit(sprite, (x, (size[1] - sprite.get_height()) // 2))
+            x += sprite.get_width() + 8
+        pygame.draw.rect(preview, (15, 15, 25), preview.get_rect(), width=3)
+        return preview
+
+    def draw_stage_select(self):
+        if self.menu_bg:
+            self.screen.blit(self.menu_bg, (0, 0))
+        else:
+            self.draw_background()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((12, 10, 22, 225))     # dark enough to hide the logo in the artwork
+        self.screen.blit(overlay, (0, 0))
+        title = self.title_font.render("SELECT STAGE", True, COLOR_GOLD)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 80))
+        subtitle = self.font.render("Click a stage or press [1 / 2 / 3]", True, COLOR_WHITE)
+        self.screen.blit(subtitle, (SCREEN_WIDTH // 2 - subtitle.get_width() // 2, 135))
+
+        mouse_pos = pygame.mouse.get_pos()
+        for index, rect in enumerate(self.stage_card_rects):
+            stage = STAGES[index]()
+            hover = rect.collidepoint(mouse_pos)
+            frame = self.card_frame_hover if (hover and self.card_frame_hover) else self.card_frame
+            if frame:
+                self.screen.blit(frame, rect.topleft)
+            else:
+                pygame.draw.rect(self.screen, COLOR_CARD_BG, rect, border_radius=12)
+                pygame.draw.rect(self.screen, COLOR_GOLD if hover else COLOR_CARD_BORDER, rect,
+                                 width=3, border_radius=12)
+            number, _, place = stage.name.partition(":")
+            head = self.font.render(number.upper(), True, COLOR_GOLD if hover else COLOR_WHITE)
+            self.screen.blit(head, (rect.centerx - head.get_width() // 2, rect.y + 22))
+            self.draw_wrapped_text(place.strip(), self.small_font, (200, 200, 210), 200,
+                                   rect.centerx, rect.y + 56, 18)
+            self.screen.blit(self.stage_previews[index], (rect.centerx - 100, rect.y + 96))
+            boss = f"BOSS: {stage.boss_name}" if stage.boss_type else "NO BOSS"
+            self.draw_wrapped_text(boss, self.small_font, (255, 130, 110), 200,
+                                   rect.centerx, rect.y + 206, 18)
+            minutes, seconds = divmod(stage.duration, 60)
+            goal = self.small_font.render(f"SURVIVE {minutes}:{seconds:02d}", True, COLOR_HP_GREEN)
+            self.screen.blit(goal, (rect.centerx - goal.get_width() // 2, rect.y + 256))
+        self.btn_stage_back.draw(self.screen)
+
+    def draw_pause_menu(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+        title = self.title_font.render("GAME PAUSED", True, COLOR_WHITE)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 150))
+        for button in (self.btn_resume, self.btn_restart, self.btn_main_menu):
+            button.draw(self.screen)
+
     def render(self):
+        if self.state == GameState.MAIN_MENU:
+            self.draw_main_menu()
+            pygame.display.flip()
+            return
+        if self.state == GameState.STAGE_SELECT:
+            self.draw_stage_select()
+            pygame.display.flip()
+            return
         self.draw_background()
         self.supplies.draw(self.screen, self.camera_x, self.camera_y, self.small_font, self.player)
 
@@ -1133,21 +1384,25 @@ class Game:
             lines = [(self.title_font, self.current_stage.victory_text, COLOR_GOLD, 230),
                      (self.font, f"Time {self.timer_seconds // 60:02d}:{self.timer_seconds % 60:02d}"
                                  f"   Kills {self.kill_count}   Level {self.player.level}", COLOR_WHITE, 300),
-                     (self.font, "Press [ R ] to Play Again | Press [ ESC ] to Quit", COLOR_GOLD, 350)]
+                     (self.font, "Press [ R ] to Play Again | [ ESC ] for Main Menu", COLOR_GOLD, 350)]
             for font, text, color, y in lines:
                 surf = font.render(text, True, color)
                 self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
+            self.btn_victory_menu.draw(self.screen)
 
         if self.hand.status != "off":
             if (self.is_game_over or self.is_victory) and self.hand_hold > 0:
                 self.draw_hand_hold_bar(pygame.Rect(SCREEN_WIDTH // 2 - 150, 380, 300, 0), self.HAND_RESTART_SECONDS)
             self.draw_hand_panel()
+        if self.state == GameState.PAUSED:
+            self.draw_pause_menu()
         pygame.display.flip()
 
     def run(self):
         while self.is_running:
             dt = self.clock.tick(FPS)/1000.0
-            was_paused = self.is_level_up or self.is_game_over or self.is_victory
+            was_paused = (self.is_level_up or self.is_game_over or self.is_victory
+                          or self.state != GameState.PLAYING)
             self.handle_events()
             # Do not charge the last modal frame to active gameplay.
             started = time.perf_counter()
@@ -1167,6 +1422,7 @@ def start_at_stage2(game):
     player = game.player
     player.level = 12
     player.weapons.levels = {"enter": 4, "book": 3, "lan": 3}
+    game.selected_stage = 1
     game.start_stage(1)
 
 
@@ -1179,17 +1435,30 @@ def start_at_stage3(game):
     for _ in range(player.level - 1):
         player.exp_to_next = int(player.exp_to_next * 1.35) + 3
     player.weapons.levels = {"enter": 5, "book": 5, "lan": 5}
+    game.selected_stage = 2
     game.start_stage(2)
 
 
-def main():
-    game = Game()
-    # python main.py --stage 2  starts directly at the Accounting Faculty.
-    if "--stage" in sys.argv and sys.argv[sys.argv.index("--stage") + 1:][:1] == ["2"]:
+def create_game(argv=None):
+    """Build the Game from command-line flags (used by main() and the tests).
+
+    python main.py             opens the main menu.
+    python main.py --stage 2   skips the menu and starts at the Accounting Faculty.
+    python main.py --stage 3   skips the menu and starts at the data center.
+    """
+    argv = sys.argv if argv is None else argv
+    has_stage_flag = "--stage" in argv
+    stage = argv[argv.index("--stage") + 1:][:1] if has_stage_flag else []
+    game = Game(start_in_menu=not has_stage_flag)
+    if stage == ["2"]:
         start_at_stage2(game)
-    elif "--stage" in sys.argv and sys.argv[sys.argv.index("--stage") + 1:][:1] == ["3"]:
+    elif stage == ["3"]:
         start_at_stage3(game)
-    game.run()
+    return game
+
+
+def main():
+    create_game().run()
 
 
 if __name__ == "__main__":
