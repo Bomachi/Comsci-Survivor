@@ -178,14 +178,20 @@ class WeaponSystem:
                     self.effects.append(Effect(kind,player.x,player.y,reach,direction,width))
             elif kind == "wifi":
                 radius = 85+level*20
+                pushes = {}
                 for enemy in living:
                     dx,dy = enemy.x-player.x,enemy.y-player.y
                     dist = math.hypot(dx,dy)
                     if dist <= radius+enemy.radius:
                         enemy.hp -= damage
-                        push = 24+level*8
-                        enemy.x += (dx/dist if dist else 1)*push
-                        enemy.y += (dy/dist if dist else 0)*push
+                        body = getattr(enemy, "knockback_body", enemy)
+                        if body not in pushes:
+                            push = 24+level*8
+                            pushes[body] = ((dx/dist if dist else 1)*push,
+                                            (dy/dist if dist else 0)*push)
+                for body, (push_x, push_y) in pushes.items():
+                    body.x += push_x
+                    body.y += push_y
                 self.effects.append(Effect(kind,player.x,player.y,radius))
             else:
                 count = 1+(level-1)//2 if kind in ("enter","bug") else 1

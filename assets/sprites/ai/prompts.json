@@ -1,0 +1,51 @@
+{
+  "tool": "Built-in image_gen; transparent_background=true",
+  "assets": [
+    {
+      "file": "ai_chatgpt.png",
+      "prompt": "Create a single game enemy sprite for a Pygame top down survivor game. Reference 1 is the exact white ChatGPT interlocking knot head logo, reference 2 shows the existing chunky pixel art style. A squat small green and charcoal combat robot with two arms and two feet, its oversized head is clearly the white ChatGPT knot logo on a dark emerald round face, no human head. Front three-quarter view with feet pointing down, readable silhouette at 48 pixels. Crisp hand-pixeled arcade sprite, chunky pixel clusters, dark outline, restrained shading, no antialiasing or text. Entire character centered, isolated on actual transparent background, no ground, no shadow, generous transparent margin. One character only.",
+      "references": [
+        "images.png",
+        "acc_boss.png"
+      ]
+    },
+    {
+      "file": "ai_claude.png",
+      "prompt": "Create one game enemy sprite. Reference 1 is the exact Claude Code mascot silhouette: terracotta orange wide rectangular creature with two dark square eyes, protruding stub arms and four short block feet. Preserve this recognizable shape and terracotta orange color, no human body or head. Add subtle dark orange pixel shading and a tiny cyan circuit highlight to make a hostile computer creature for a top down survivor game. Match chunky pixel art style reference 2. Front view, readable at 48 pixels, crisp pixel clusters, no text, one creature centered, full body and all feet visible, isolated on genuine transparent background, no floor, no shadow.",
+      "references": [
+        "images (1).png",
+        "acc_boss.png"
+      ]
+    },
+    {
+      "file": "ai_gemini.png",
+      "prompt": "Create one enemy sprite for a top down Pygame survivor. Reference 1 is Gemini's four pointed concave curved star logo with blue red yellow green gradient, use its exact recognizable star silhouette as the oversized head. Reference 2 gives existing chunky pixel art style. Sturdy navy and blue combat robot body with shoulders, two short legs, two arms; the floating colorful four pointed star is the entire head, no face or human head. Front three-quarter view, crisp pixel clusters with dark outlines, readable at 56px. One full character centered on actual transparent background, no text, no ground, no shadow, all extremities inside frame.",
+      "references": [
+        "codex-clipboard-de4fdc52-ac4b-4da9-82ff-1a4144109a62.png",
+        "acc_boss.png"
+      ]
+    },
+    {
+      "file": "ai_hydra_body.png",
+      "prompt": "Create a boss sprite asset for a top down survivor game in chunky hand-pixelled arcade art matching reference. A formidable cybernetic hydra dragon lower body only: broad charcoal armored reptile torso, four clawed feet, tail curling to the right, emerald and cyan circuit glows, orange details. Important: NO heads and NO necks at all, upper torso ends at three small neck socket ports in a row. The game will separately draw three long necks and three logo heads above this body. Front three-quarter view from slightly above, symmetrical broad shoulders, readable silhouette at 140 by 100 pixels. One full isolated body centered with generous margins on genuinely transparent background. No text, no ground, no cast shadow.",
+      "references": [
+        "acc_boss.png"
+      ]
+    },
+    {
+      "file": "ai_server.png",
+      "prompt": "One isolated scenery prop sprite for a pixel art top down survivor game: tall dark navy server rack cabinet, chunky pixel art matching reference, front three quarter view slightly from above, cyan and green glowing status lights, stacked server bays, clear dark outline, readable at 70x100 pixels. Full object visible centered on actual transparent background. No characters, no text, no floor or cast shadow. Single prop.",
+      "references": [
+        "acc_boss.png"
+      ]
+    },
+    {
+      "file": "ai_terminal.png",
+      "prompt": "One isolated scenery prop sprite for a pixel art top down survivor game: compact futuristic computer console desk with two cyan blue glowing monitor screens, keyboard and dark navy support legs, chunky pixel clusters matching reference, front three quarter view slightly from above, clear outline, readable at 90x70 pixels. Entire single prop visible centered on genuinely transparent background, no ground, no shadow, no text or characters.",
+      "references": [
+        "acc_boss.png"
+      ]
+    }
+  ],
+  "heads": "head_chatgpt.png, head_claude.png and head_gemini.png are unchanged user-supplied reference PNGs. Cropping/scaling happens at runtime."
+}

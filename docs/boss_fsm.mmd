@@ -1,0 +1,15 @@
+stateDiagram-v2
+    direction LR
+    [*] --> CHASE
+    CHASE --> AUDIT: timer ends (attack 1)
+    CHASE --> AIM: timer ends (attack 2)
+    CHASE --> SUMMON: timer ends (attack 3)
+    AUDIT --> CHASE: fire coin ring
+    AIM --> CHARGE: lock direction
+    CHARGE --> RECOVER: dash ends
+    RECOVER --> CHASE: recovered
+    SUMMON --> CHASE: call 4 freshmen
+    note right of CHASE
+      HP below 50% = ENRAGED
+      shorter CHASE/RECOVER, 16 coins
+    end note

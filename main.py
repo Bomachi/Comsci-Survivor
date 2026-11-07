@@ -2,16 +2,25 @@ import os
 import sys
 import math
 import random
+from enum import Enum
 import pygame
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPRITES_DIR = os.path.join(BASE_DIR, "assets", "sprites")
 
-from stages.stage1 import Stage1
-from upgrades import available_upgrades, apply_upgrade
+from stages import STAGES
+from upgrades import available_upgrades, apply_upgrade, level_up_choices, apply_choice
 from weapons import WeaponSystem, WEAPONS, draw_icon
 from item_art import draw_item
-from supplies import Supplies
+from supplies import Supplies, Food
+from accounting import update_ranged, update_boss, draw_boss_telegraph
+from ai_enemies import AI_STATS, AI_COLORS, Hydra, configure_ai, update_ai, draw_ai_warning
+from spatial import separate, CELL_SIZE
+from pathfinding import ObstacleMap, FlowField
+from animation import Animator, Effects
+from stage_art import Scenery, build_tiles, build_ai_tiles
+from hand_control import HandController
+import time
 
 SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 700
@@ -26,6 +35,62 @@ COLOR_CARD_BG = (35, 30, 50)
 COLOR_CARD_BORDER = (100, 90, 130)
 
 
+class GameState(Enum):
+    """Which screen is active. Game over and victory stay as Game flags."""
+    MAIN_MENU = 1
+    PLAYING = 2
+    PAUSED = 3
+    STAGE_SELECT = 4
+
+
+# Enemies drawn on each stage card of the stage-select screen (same order as STAGES).
+STAGE_PREVIEW_ENEMIES = (
+    ("TA", "professor", "rector"),
+    ("acc_freshman", "acc_calculator", "acc_senior"),
+    ("ai_chatgpt", "ai_claude", "ai_gemini"),
+)
+
+
+class Button:
+    """Clickable image button used by the main menu and the pause menu."""
+
+    def __init__(self, x, y, width, height, text="", font=None, bg_color=(40, 40, 50),
+                 hover_color=(70, 70, 90), text_color=(255, 255, 255), image=None):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = font
+        self.bg_color = bg_color
+        self.hover_color = hover_color
+        self.text_color = text_color
+        self.is_hovered = False
+        # Scale once here instead of on every frame.
+        self.image = pygame.transform.scale(image, self.rect.size) if image else None
+        self.hover_overlay = None
+        if self.image:
+            self.hover_overlay = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+            self.hover_overlay.fill((255, 255, 255, 45))
+
+    def update(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+
+    def draw(self, surface):
+        if self.image:
+            surface.blit(self.image, self.rect)
+            if self.is_hovered:
+                surface.blit(self.hover_overlay, self.rect.topleft)
+        else:
+            color = self.hover_color if self.is_hovered else self.bg_color
+            pygame.draw.rect(surface, color, self.rect, border_radius=10)
+            pygame.draw.rect(surface, (200, 200, 200), self.rect, width=2, border_radius=10)
+            if self.font and self.text:
+                txt_surf = self.font.render(self.text, True, self.text_color)
+                surface.blit(txt_surf, txt_surf.get_rect(center=self.rect.center))
+
+    def is_clicked(self, event):
+        return (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                and self.rect.collidepoint(event.pos))
+
+
 def load_sprite(filename: str, size=None):
     path = os.path.join(SPRITES_DIR, filename)
     if os.path.exists(path):
@@ -34,6 +99,24 @@ def load_sprite(filename: str, size=None):
             surf = pygame.transform.scale(surf, size)
         return surf
     return None
+
+
+def load_ai_sprite(filename, bounds):
+    """Trim transparent margins, then fit new artwork without distorting logos."""
+    image = load_sprite(os.path.join("ai", filename))
+    if image is None:
+        return None
+    # The supplied white logo uses a black matte rather than an alpha channel.
+    # Interpret its matte while rendering; keep the reference PNG unchanged.
+    if filename == "head_chatgpt.png":
+        image.set_colorkey((0, 0, 0))
+    rect = image.get_bounding_rect(min_alpha=8)
+    if not rect.width or not rect.height:
+        return None
+    image = image.subsurface(rect).copy()
+    scale = min(bounds[0] / rect.width, bounds[1] / rect.height)
+    return pygame.transform.scale(image, (max(1, round(rect.width * scale)),
+                                         max(1, round(rect.height * scale))))
 
 
 class Player:
@@ -55,6 +138,8 @@ class Player:
         self.weapons = WeaponSystem()
         self.coffee_remaining = 0.0
         self.hurt_remaining = 0.0
+        self.anim = Animator()
+        self.anim.spawn = 0
 
     @property
     def move_speed(self):
@@ -63,10 +148,18 @@ class Player:
     def drink_coffee(self):
         self.coffee_remaining = 10.0
 
-    def handle_input(self, dt):
+    def handle_input(self, dt, analog=None):
+        """Keyboard first; otherwise an analog vector (length 0..1), e.g. from hand control."""
         keys = pygame.key.get_pressed()
         dx = int(keys[pygame.K_d] or keys[pygame.K_RIGHT]) - int(keys[pygame.K_a] or keys[pygame.K_LEFT])
         dy = int(keys[pygame.K_s] or keys[pygame.K_DOWN]) - int(keys[pygame.K_w] or keys[pygame.K_UP])
+        if not dx and not dy and analog and (analog[0] or analog[1]):
+            ax, ay = analog
+            if abs(ax) > 0.05:
+                self.facing_right = ax > 0
+            self.x += ax * self.move_speed * dt
+            self.y += ay * self.move_speed * dt
+            return
         if dx:
             self.facing_right = dx > 0
         length = math.hypot(dx, dy) or 1
@@ -88,9 +181,9 @@ class Player:
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
         if self.sprite:
-            img = self.sprite if self.facing_right else pygame.transform.flip(self.sprite, True, False)
-            rect = img.get_rect(center=(sx, sy))
-            surface.blit(img, rect)
+            # Blink while invulnerable after a hit.
+            alpha = 110 if self.hurt_remaining > 0 and int(self.hurt_remaining * 14) % 2 else 255
+            self.anim.draw(surface, self.sprite, sx, sy, self.facing_right, alpha=alpha)
         else:
             pygame.draw.circle(surface, (80, 200, 120), (sx, sy), self.radius)
 
@@ -109,6 +202,26 @@ class Enemy:
         self.enemy_type = enemy_type
         self.sprite = sprite
         self.facing_right = True
+        # Stage 2 behaviour (defaults keep Stage 1 enemies unchanged).
+        self.exp_value = 1
+        self.preferred_range = 0
+        self.shoot_cooldown = 0
+        self.shoot_timer = 0
+        self.shot_damage = 0
+        self.is_boss = False
+        self.mass = 1.0
+        # Smarter movement and animation
+        self.anim = Animator()
+        self.prev_hp = None
+        self.flank = random.uniform(-0.7, 0.7)     # approach angle offset -> enemies surround
+        self.can_lunge = False
+        self.lunge_state = ""                      # "", "windup" or "dash"
+        self.lunge_timer = 0.0
+        self.lunge_cooldown = random.uniform(0.5, 2.0)
+        self.lunge_dir = (0.0, 0.0)
+        self.lunge_windup = 0.28
+        self.strafe_sign = random.choice((-1, 1))
+        self.strafe_timer = random.uniform(1.5, 3.0)
 
         if enemy_type == "TA":
             self.hp = 20
@@ -128,31 +241,121 @@ class Enemy:
             self.radius = 18
             self.damage = 22
             self.color = (220, 215, 200)
+        # --- Stage 2: Accounting Faculty ---
+        elif enemy_type == "acc_freshman":
+            self.hp = 32
+            self.speed = 150.0
+            self.radius = 14
+            self.damage = 10
+            self.color = (60, 150, 90)
+            self.exp_value = 2
+            self.can_lunge = True
+        elif enemy_type == "acc_calculator":
+            self.hp = 55
+            self.speed = 85.0
+            self.radius = 16
+            self.damage = 10
+            self.color = (120, 190, 140)
+            self.exp_value = 3
+            self.preferred_range = 240
+            self.shoot_cooldown = 2.4
+            self.shoot_timer = random.uniform(0.8, 2.4)
+            self.shot_damage = 12
+        elif enemy_type == "acc_senior":
+            self.hp = 160
+            self.speed = 70.0
+            self.radius = 21
+            self.damage = 26
+            self.color = (40, 110, 60)
+            self.exp_value = 5
+        elif enemy_type == "acc_boss":
+            self.hp = 3200
+            self.speed = 64.0
+            self.radius = 40
+            self.damage = 30
+            self.color = (30, 90, 50)
+            self.exp_value = 60
+            self.shot_damage = 14
+            self.is_boss = True
+            self.mass = 8.0
+            self.brain = None  # BossBrain state machine, created on first update
 
+        elif enemy_type in AI_STATS:
+            configure_ai(self)
         else:
             raise ValueError(f"Unknown enemy type: {enemy_type}")
+        self.max_hp = self.hp
+        self.prev_hp = self.hp
 
-    def update(self, px, py, dt):
+    def update(self, px, py, dt, steer=None):
+        """Move toward (px, py). `steer` is an optional unit vector from the
+        Game (flow field around obstacles, or a flanking angle)."""
         speed = self.speed * (0.55 if self.slow_remaining > 0 else 1.0)
         self.slow_remaining = max(0, self.slow_remaining - dt)
         dx = px - self.x
         dy = py - self.y
         dist = math.hypot(dx, dy)
-        if dist > 0:
+        if self.can_lunge and self.update_lunge(dx, dy, dist, speed, dt):
+            return
+        if self.preferred_range and dist > 0:
+            low, high = self.preferred_range * 0.75, self.preferred_range * 1.25
+            self.strafe_timer -= dt
+            if self.strafe_timer <= 0:
+                self.strafe_sign *= -1
+                self.strafe_timer = random.uniform(1.5, 3.0)
+            if dist < low:
+                # Too close: back away while throwing.
+                dx, dy = -dx, -dy
+                speed *= 0.6
+                steer = None
+            elif dist < high:
+                # In range: circle-strafe so the player cannot just walk up.
+                dx, dy = -dy * self.strafe_sign, dx * self.strafe_sign
+                speed *= 0.5
+                steer = None
+        if steer is not None:
+            self.x += steer[0] * speed * dt
+            self.y += steer[1] * speed * dt
+            self.facing_right = (px > self.x)
+        elif dist > 0:
             step = min(dist, speed * dt)
             self.x += (dx / dist) * step
             self.y += (dy / dist) * step
-            self.facing_right = (dx > 0)
+            self.facing_right = (px > self.x)
+
+    def update_lunge(self, dx, dy, dist, speed, dt):
+        """Freshmen crouch (telegraph) then dash at the player. True = handled."""
+        self.lunge_cooldown -= dt
+        if self.lunge_state == "windup":
+            self.lunge_timer -= dt
+            if self.lunge_timer <= 0:
+                self.lunge_state, self.lunge_timer = "dash", 0.32
+            return True
+        if self.lunge_state == "dash":
+            self.lunge_timer -= dt
+            self.x += self.lunge_dir[0] * speed * 2.7 * dt
+            self.y += self.lunge_dir[1] * speed * 2.7 * dt
+            if self.lunge_timer <= 0:
+                self.lunge_state, self.lunge_cooldown = "", random.uniform(1.8, 2.8)
+            return True
+        if 40 < dist < 120 and self.lunge_cooldown <= 0:
+            self.lunge_state, self.lunge_timer = "windup", self.lunge_windup
+            self.lunge_dir = (dx / dist, dy / dist)
+            self.facing_right = dx > 0
+            return True
+        return False
 
     def draw(self, surface, cam_x, cam_y):
         sx = int(self.x - cam_x)
         sy = int(self.y - cam_y)
         if self.sprite:
-            img = self.sprite if self.facing_right else pygame.transform.flip(self.sprite, True, False)
-            rect = img.get_rect(center=(sx, sy))
-            surface.blit(img, rect)
+            self.anim.draw(surface, self.sprite, sx, sy, self.facing_right, windup=self.lunge_state == "windup")
         else:
             pygame.draw.circle(surface, self.color, (sx, sy), self.radius)
+
+    @property
+    def feet_y(self):
+        return self.y + (self.sprite.get_height() / 2 if self.sprite else self.radius)
 
 
 class Gem:
@@ -183,11 +386,11 @@ class Coffee:
 
 
 class Game:
-    def __init__(self):
+    def __init__(self, start_in_menu=False):
         pygame.init()
         pygame.font.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Classroom Survivor - Pygame Edition")
+        pygame.display.set_caption("Comsci Survivor")
         self.clock = pygame.time.Clock()
 
         font_path = os.path.join(BASE_DIR, "assets", "fonts", "Minecraft.ttf")
@@ -205,13 +408,133 @@ class Game:
         self.TA_sprite = load_sprite("TA.png", (36, 36))
         self.professor_sprite = load_sprite("professor.png", (40, 40))
         self.skel_sprite = load_sprite("rector.png", (44, 44))
-        
+        self.enemy_sprites = {
+            "TA": self.TA_sprite,
+            "professor": self.professor_sprite,
+            "rector": self.skel_sprite,
+            "acc_freshman": load_sprite("acc_freshman.png", (40, 40)),
+            "acc_calculator": load_sprite("acc_calculator.png", (42, 42)),
+            "acc_senior": load_sprite("acc_senior.png", (50, 50)),
+            "acc_boss": load_sprite("acc_boss.png", (104, 104)),
+            "ai_chatgpt": load_ai_sprite("ai_chatgpt.png", (48, 52)),
+            "ai_claude": load_ai_sprite("ai_claude.png", (50, 45)),
+            "ai_gemini": load_ai_sprite("ai_gemini.png", (56, 60)),
+            "ai_hydra": load_ai_sprite("ai_hydra_body.png", (146, 106)),
+        }
+        self.hydra_head_sprites = {kind: load_ai_sprite("head_" + kind + ".png", (46, 46))
+                                   for kind in AI_COLORS}
+        self.stage_tiles = {"stage1_tile.png": self.stage1_tile}
+
+        # Debug overlay (F3) and collision strategy (F2) for demos/benchmarks.
+        self.show_debug = False
+        self.collision_mode = "hash"
+        self.demo_mode = False  # F4: invincible; automatic weapons stay active
+        self.frame_ms = 0.0
+        self.sep_history = []
+        self.effects = Effects()
+        self.hand = HandController()
+        self.hand_pick_index = None    # card under the hand during level-up
+        self.hand_hold = 0.0           # seconds the fist has been held
+        self.hand_armed = True         # must open the hand again between picks
+        self.obstacles = ObstacleMap()
+        self.flow = FlowField(self.obstacles)
+        self.scenery = None
+        self.player_vel = (0.0, 0.0)
+        self.last_dt = 1 / FPS
+        self.flow_ms = 0.0
 
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
 
-        self.current_stage = Stage1()
+        # Main menu and pause menu.
+        self.menu_bg = load_sprite("main_menu_background.jpg", (SCREEN_WIDTH, SCREEN_HEIGHT))
+        button_x = SCREEN_WIDTH // 2 - 110
+        def make_button(y, text, image_name):
+            return Button(button_x, y, 220, 60, text, self.font, image=load_sprite(image_name, (220, 60)))
+        self.btn_start = make_button(480, "START GAME", "start_game_button.png")
+        self.btn_quit = make_button(560, "QUIT", "quit_button.png")
+        self.btn_resume = make_button(250, "RESUME", "resume_button.png")
+        self.btn_restart = make_button(330, "RESTART", "restart_button.png")
+        self.btn_main_menu = make_button(410, "MAIN MENU", "main_menu_button.png")
+        self.btn_stage_back = make_button(610, "MAIN MENU", "main_menu_button.png")
+        self.btn_victory_menu = make_button(430, "MAIN MENU", "main_menu_button.png")
+
+        # Stage-select cards use the same frame art as the level-up cards.
+        card_w, card_h, gap = 240, 300, 25
+        first_x = (SCREEN_WIDTH - (len(STAGES) * card_w + (len(STAGES) - 1) * gap)) // 2
+        self.stage_card_rects = [pygame.Rect(first_x + i * (card_w + gap), 190, card_w, card_h)
+                                 for i in range(len(STAGES))]
+        self.stage_previews = [self.build_stage_preview(i) for i in range(len(STAGES))]
+        self.selected_stage = 0     # the stage chosen on the select screen; Restart replays it
+        # Tests and headless runs build Game() directly and expect to be playing;
+        # only main() asks for the menu.
+        self.state = GameState.MAIN_MENU if start_in_menu else GameState.PLAYING
+
         self.reset_game()
+
+    def stage_tile(self):
+        name = self.current_stage.ground_tile_name
+        if self.current_stage.scenery_theme == "ai" and self.scenery:
+            return self.scenery.tiles[0]
+        if name not in self.stage_tiles:
+            self.stage_tiles[name] = load_sprite(name, (64, 64))
+        return self.stage_tiles[name]
+
+    def start_stage(self, index):
+        """Enter a stage, keeping the same Player (EXP, level and weapons)."""
+        self.stage_index = index
+        self.current_stage = STAGES[index]()
+        self.stage_start_seconds = self.elapsed_seconds
+        self.enemies = []
+        self.enemy_shots = []
+        self.gems = []
+        self.coffees = []
+        self.boss = None
+        self.boss_spawned = False
+        self.spawn_timer = 0
+        self.player.weapons.projectiles.clear()
+        self.player.weapons.effects.clear()
+        self.player.weapons.book_hits.clear()
+        self.banner_text = self.current_stage.name.upper()
+        self.banner_remaining = 3.0
+        self.effects.clear()
+        self.scenery = Scenery(theme=self.current_stage.scenery_theme) if self.current_stage.decorated else None
+        self.obstacles.set_rects([])
+        self.flow.target_cell = None
+        self.refresh_scenery()
+
+    def refresh_scenery(self):
+        if self.scenery and self.scenery.update(self.player.x, self.player.y):
+            self.obstacles.set_rects(self.scenery.solid_rects())
+            self.flow.target_cell = None   # obstacles changed: rebuild the field
+            self.obstacles.push_out(self.player)
+
+    def steer_for(self, enemy):
+        """Unit vector for an enemy, or None for a straight line to the player.
+
+        Near obstacles the BFS flow field is used when it points away from the
+        straight line (something is in the way). In the open, enemies keep an
+        individual angle offset so a crowd spreads out and surrounds the player
+        instead of forming a queue; the offset fades as they get close.
+        """
+        dx, dy = self.player.x - enemy.x, self.player.y - enemy.y
+        dist = math.hypot(dx, dy)
+        if dist < 1:
+            return None
+        ux, uy = dx / dist, dy / dist
+        if self.obstacles.rects:
+            field = self.flow.direction(enemy.x, enemy.y)
+            if field and field[0] * ux + field[1] * uy < 0.9:   # > ~25 degrees off the straight line
+                return field
+        if dist > 140:
+            angle = enemy.flank * min(1.0, (dist - 140) / 320)
+            c, s = math.cos(angle), math.sin(angle)
+            return (ux * c - uy * s, ux * s + uy * c)
+        return None
+
+    @property
+    def stage_seconds(self):
+        return int(self.elapsed_seconds - self.stage_start_seconds)
 
     def reset_game(self):
         self.player = Player(0, 0, sprite=self.player_sprite)
@@ -232,28 +555,79 @@ class Game:
         self.upgrade_rects = []
 
         self.is_game_over = False
+        self.is_victory = False
+        self.pair_stats = None
+        self.separation_ms = 0.0
         self.is_running = True
+        self.start_stage(self.selected_stage)
 
     def spawn_enemy(self):
         angle = random.uniform(0, math.tau)
         dist = random.uniform(600, 750)
         ex = self.player.x + math.cos(angle) * dist
         ey = self.player.y + math.sin(angle) * dist
-        etype = self.current_stage.get_enemy_spawn_type(self.timer_seconds)
+        stage_time = self.timer_seconds - int(self.stage_start_seconds)
+        etype = self.current_stage.get_enemy_spawn_type(stage_time)
+        self.add_enemy(etype, ex, ey)
 
-        spr = self.TA_sprite
-        if etype == "professor":
-            spr = self.professor_sprite
-        elif etype == "rector":
-            spr = self.skel_sprite
+    def add_enemy(self, etype, x, y):
+        if etype == "ai_hydra":
+            enemy = Hydra(x, y, self.enemy_sprites[etype], self.hydra_head_sprites)
+        else:
+            enemy = Enemy(x, y, etype, sprite=self.enemy_sprites.get(etype))
+        self.obstacles.push_out(enemy)
+        self.enemies.append(enemy)
+        return enemy
 
-        self.enemies.append(Enemy(ex, ey, etype, sprite=spr))
+    def stress_spawn(self, count):
+        """Demo: add a crowd around the player, ignoring the normal enemy cap."""
+        kind = ("ai_chatgpt" if self.current_stage.scenery_theme == "ai" else
+                "acc_freshman" if self.current_stage.boss_type else "TA")
+        for _ in range(count):
+            angle = random.uniform(0, math.tau)
+            dist = random.uniform(250, 650)
+            self.add_enemy(kind, self.player.x + math.cos(angle) * dist, self.player.y + math.sin(angle) * dist)
+
+    def spawn_boss(self):
+        stage = self.current_stage
+        angle = random.uniform(0, math.tau)
+        self.boss = self.add_enemy(stage.boss_type, self.player.x + math.cos(angle) * 420,
+                                   self.player.y + math.sin(angle) * 420)
+        self.boss_spawned = True
+        self.banner_text = "BOSS: " + stage.boss_name
+        self.banner_remaining = 3.0
+
+    def update_stage_progress(self):
+        """Spawn the stage boss on schedule and win the stage once its time is up.
+
+        A stage is won when its full duration has passed AND any boss that has
+        appeared is defeated. Winning ends the run (it does not chain into the
+        next stage).
+        """
+        stage = self.current_stage
+        stage_time = self.elapsed_seconds - self.stage_start_seconds
+        if stage.boss_type and not self.boss_spawned and stage_time >= stage.boss_time:
+            self.spawn_boss()
+        boss_alive = self.boss_spawned and self.boss is not None and self.boss.hp > 0
+        if stage_time >= stage.duration and not boss_alive:
+            self.is_victory = True
+            return True
+        return False
+
+    def combat_targets(self):
+        """Weapons see heads; movement, contact, separation and loot see bodies."""
+        targets = []
+        for enemy in self.enemies:
+            if isinstance(enemy, Hydra):
+                targets.extend(enemy.living_heads)
+            elif enemy.hp > 0:
+                targets.append(enemy)
+        return targets
 
     def trigger_level_up(self):
         self.is_level_up = True
-        pool = available_upgrades(self.player)
-        num_options = min(3, len(pool))
-        self.current_upgrades = random.sample(pool, num_options)
+        self.current_upgrades = level_up_choices(self.player, random)
+        num_options = len(self.current_upgrades)
 
         card_w, card_h = 240, 300
         gap = 25
@@ -269,7 +643,7 @@ class Game:
     def apply_upgrade(self, upgrade_data):
         if not self.is_level_up or self.player.pending_level_ups <= 0:
             return
-        if upgrade_data not in self.current_upgrades or not apply_upgrade(self.player, upgrade_data):
+        if upgrade_data not in self.current_upgrades or not apply_choice(self.player, upgrade_data):
             return
         self.player.pending_level_ups -= 1
 
@@ -278,69 +652,224 @@ class Game:
         else:
             self.is_level_up = False
 
+    def menu_buttons(self):
+        """Buttons that are visible (and clickable) in the current state."""
+        if self.state == GameState.MAIN_MENU:
+            return (self.btn_start, self.btn_quit)
+        if self.state == GameState.STAGE_SELECT:
+            return (self.btn_stage_back,)
+        if self.state == GameState.PAUSED:
+            return (self.btn_resume, self.btn_restart, self.btn_main_menu)
+        if self.state == GameState.PLAYING and self.is_victory:
+            return (self.btn_victory_menu,)
+        return ()
+
     def handle_events(self):
+        mouse_pos = pygame.mouse.get_pos()
+        for button in self.menu_buttons():
+            button.update(mouse_pos)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.is_running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.is_running = False
-                elif self.is_level_up and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
-                    index = event.key - pygame.K_1
-                    if index < len(self.current_upgrades):
-                        self.apply_upgrade(self.current_upgrades[index])
-                elif event.key == pygame.K_r and self.is_game_over:
-                    self.reset_game()
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
-                mx, my = event.pos
-                for idx, rect in enumerate(self.upgrade_rects):
-                    if rect.collidepoint(mx, my):
-                        self.apply_upgrade(self.current_upgrades[idx])
-                        break
+            elif self.state == GameState.MAIN_MENU:
+                self.handle_main_menu_event(event)
+            elif self.state == GameState.STAGE_SELECT:
+                self.handle_stage_select_event(event)
+            elif self.state == GameState.PAUSED:
+                self.handle_pause_event(event)
+            else:
+                self.handle_play_event(event)
+
+    def handle_main_menu_event(self, event):
+        if self.btn_start.is_clicked(event):
+            self.state = GameState.STAGE_SELECT
+        elif self.btn_quit.is_clicked(event):
+            self.is_running = False
+
+    def start_run(self, stage_index):
+        """Begin a fresh run on the chosen stage."""
+        self.selected_stage = stage_index
+        self.reset_game()
+        self.state = GameState.PLAYING
+
+    def go_to_main_menu(self):
+        self.state = GameState.MAIN_MENU
+
+    def handle_stage_select_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.go_to_main_menu()
+            elif pygame.K_1 <= event.key < pygame.K_1 + len(STAGES):
+                self.start_run(event.key - pygame.K_1)
+        elif self.btn_stage_back.is_clicked(event):
+            self.go_to_main_menu()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for index, rect in enumerate(self.stage_card_rects):
+                if rect.collidepoint(event.pos):
+                    self.start_run(index)
+                    break
+
+    def handle_pause_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.state = GameState.PLAYING
+        elif self.btn_resume.is_clicked(event):
+            self.state = GameState.PLAYING
+        elif self.btn_restart.is_clicked(event):
+            self.reset_game()
+            self.state = GameState.PLAYING
+        elif self.btn_main_menu.is_clicked(event):
+            self.go_to_main_menu()
+
+    def handle_play_event(self, event):
+        if self.is_victory and self.btn_victory_menu.is_clicked(event):
+            self.go_to_main_menu()
+            return
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                if self.is_victory:
+                    self.go_to_main_menu()
+                elif self.is_game_over:
+                    self.is_running = False   # matches the on-screen "[ ESC ] to Quit"
+                else:
+                    self.state = GameState.PAUSED
+            elif event.key == pygame.K_RETURN and self.is_victory:
+                self.go_to_main_menu()
+            elif event.key == pygame.K_F3:
+                self.show_debug = not self.show_debug
+            elif event.key == pygame.K_F2:
+                self.collision_mode = "naive" if self.collision_mode == "hash" else "hash"
+                self.sep_history.clear()
+            elif event.key == pygame.K_F7:
+                self.hand.toggle()
+            elif event.key == pygame.K_F4:
+                self.demo_mode = not self.demo_mode
+            elif event.key == pygame.K_F5 and not (self.is_level_up or self.is_game_over or self.is_victory):
+                self.stress_spawn(300)
+            elif self.is_level_up and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                index = event.key - pygame.K_1
+                if index < len(self.current_upgrades):
+                    self.apply_upgrade(self.current_upgrades[index])
+            elif event.key == pygame.K_r and (self.is_game_over or self.is_victory):
+                self.reset_game()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self.is_level_up:
+            mx, my = event.pos
+            for idx, rect in enumerate(self.upgrade_rects):
+                if rect.collidepoint(mx, my):
+                    self.apply_upgrade(self.current_upgrades[idx])
+                    break
 
     def update(self, dt=1/FPS):
-        if self.is_game_over or self.is_level_up:
+        if self.state != GameState.PLAYING or self.is_game_over or self.is_level_up or self.is_victory:
             return
         # A stalled window must not jump the simulation several seconds ahead.
         dt = min(max(dt, 0), 0.1)
         self.elapsed_seconds += dt
         self.timer_seconds = int(self.elapsed_seconds)
+        self.banner_remaining = max(0, self.banner_remaining - dt)
         self.player.coffee_remaining = max(0, self.player.coffee_remaining-dt)
         self.player.hurt_remaining = max(0, self.player.hurt_remaining-dt)
+        self.last_dt = dt
         previous_position = (self.player.x, self.player.y)
-        self.player.handle_input(dt)
+        if self.hand.status != "off":
+            self.player.handle_input(dt, self.hand.poll())
+        else:
+            self.player.handle_input(dt)
+        self.obstacles.push_out(self.player)
         moved = math.hypot(self.player.x - previous_position[0], self.player.y - previous_position[1]) > 1e-6
+        self.player_vel = ((self.player.x - previous_position[0]) / dt if dt else 0,
+                           (self.player.y - previous_position[1]) / dt if dt else 0)
+        self.player.anim.update(self.player.x, self.player.y, dt)
+        self.refresh_scenery()
+        if self.obstacles.rects:
+            started = time.perf_counter()
+            self.flow.update(self.player.x, self.player.y)
+            self.flow_ms = (time.perf_counter() - started) * 1000
 
         smoothing = 1 - 0.9 ** (dt*60)
         self.camera_x += (self.player.x - SCREEN_WIDTH//2 - self.camera_x)*smoothing
         self.camera_y += (self.player.y - SCREEN_HEIGHT//2 - self.camera_y)*smoothing
         self.spawn_timer += dt
-        if self.spawn_timer >= 2/3:
+        interval = self.current_stage.spawn_interval * (1.6 if self.boss and self.boss.hp > 0 else 1)
+        if self.spawn_timer >= interval:
             if len(self.enemies) < 120:
                 self.spawn_enemy()
-            self.spawn_timer %= 2/3
+            self.spawn_timer %= interval
 
         for enemy in self.enemies:
             if enemy.hp > 0:
-                enemy.update(self.player.x, self.player.y, dt)
-        self.player.weapons.update(dt, self.player, self.enemies)
+                if enemy.is_boss:
+                    # The boss state machine decides when and how it moves.
+                    if isinstance(enemy, Hydra):
+                        enemy.brain.update(enemy, self.player, dt, self.enemy_shots, self.steer_for(enemy))
+                    else:
+                        update_boss(enemy, self.player, dt, self.enemy_shots, self.add_enemy)
+                    continue
+                if enemy.enemy_type in AI_STATS:
+                    update_ai(enemy, self.player, dt, self.enemy_shots, self.player_vel, self.steer_for(enemy))
+                    continue
+                enemy.update(self.player.x, self.player.y, dt, self.steer_for(enemy))
+                if enemy.shoot_cooldown:
+                    update_ranged(enemy, self.player, dt, self.enemy_shots, self.player_vel)
+        # Crowd separation: naive O(n^2) or spatial hash (toggle with F2).
+        living = [e for e in self.enemies if e.hp > 0]
+        started = time.perf_counter()
+        self.pair_stats = separate(living, self.collision_mode)
+        self.pair_n = len(living)
+        self.separation_ms = (time.perf_counter() - started) * 1000
+        if self.obstacles.rects:
+            for enemy in living:
+                self.obstacles.push_out(enemy)
+        self.player.weapons.update(dt, self.player, self.combat_targets())
+        if isinstance(self.boss, Hydra):
+            self.obstacles.push_out(self.boss)
+        # Hit feedback: flash + damage number whenever an enemy lost HP.
+        for enemy in self.enemies:
+            enemy.anim.update(enemy.x, enemy.y, dt)
+            if isinstance(enemy, Hydra):
+                enemy.update_feedback(dt, self.effects)
+            elif enemy.prev_hp is not None and enemy.hp < enemy.prev_hp:
+                enemy.anim.hit()
+                lost = enemy.prev_hp - max(0, enemy.hp)
+                self.effects.damage(enemy.x, enemy.y - enemy.radius - 18, lost,
+                                    (255, 120, 90) if enemy.is_boss else (255, 240, 200))
+            enemy.prev_hp = enemy.hp
+        self.effects.update(dt)
         # Resolve kills before contact damage; each enemy drops loot once.
         for enemy in self.enemies[:]:
             if enemy.hp <= 0:
-                self.gems.append(Gem(enemy.x, enemy.y))
+                self.effects.burst(enemy.x, enemy.y, enemy.sprite, 40 if enemy.is_boss else 10)
+                self.gems.append(Gem(enemy.x, enemy.y, enemy.exp_value))
+                if enemy.is_boss:
+                    for i in range(12):
+                        angle = i * math.tau / 12
+                        self.gems.append(Gem(enemy.x + math.cos(angle) * 40, enemy.y + math.sin(angle) * 40, 5))
+                    self.supplies.foods.append(Food(enemy.x, enemy.y))
                 if random.random() < 0.08:
                     self.coffees.append(Coffee(enemy.x, enemy.y))
                 self.kill_count += 1
                 self.enemies.remove(enemy)
+        if self.update_stage_progress():
+            return
+        for shot in self.enemy_shots:
+            shot.update(dt)
+        if self.demo_mode:
+            self.player.hurt_remaining = 0.75
         if self.player.hurt_remaining <= 0:
             contacts = [enemy for enemy in self.enemies
                         if math.hypot(enemy.x-self.player.x, enemy.y-self.player.y) < enemy.radius+self.player.radius]
-            if contacts:
-                self.player.hp = max(0, self.player.hp-max(e.damage for e in contacts))
+            hits = [shot for shot in self.enemy_shots if shot.hits(self.player)]
+            damage = max([e.damage for e in contacts] + [s.damage for s in hits], default=0)
+            for shot in hits:
+                shot.life = 0
+            if damage:
+                self.player.hp = max(0, self.player.hp-damage)
                 self.player.hurt_remaining = 0.75
+                self.effects.damage(self.player.x, self.player.y - self.player.radius - 18,
+                                    damage, (255, 70, 70))
                 if self.player.hp <= 0:
                     self.is_game_over = True
                     return
+        self.enemy_shots = [shot for shot in self.enemy_shots if shot.life > 0]
 
         self.supplies.update(dt, self.player, moved)
         for coffee in self.coffees[:]:
@@ -362,7 +891,11 @@ class Game:
             self.trigger_level_up()
 
     def draw_background(self):
-        if self.stage1_tile:
+        if self.scenery:
+            self.scenery.draw_floor(self.screen, self.camera_x, self.camera_y)
+            return
+        tile = self.stage_tile()
+        if tile:
             tile_w, tile_h = 64, 64
             start_col = int(self.camera_x // tile_w) - 1
             end_col = int((self.camera_x + SCREEN_WIDTH) // tile_w) + 2
@@ -372,14 +905,14 @@ class Game:
                 for r in range(start_row, end_row):
                     sx = c * tile_w - int(self.camera_x)
                     sy = r * tile_h - int(self.camera_y)
-                    self.screen.blit(self.stage1_tile, (sx, sy))
+                    self.screen.blit(tile, (sx, sy))
         else:
             self.screen.fill((24, 20, 34))
 
     def draw_hud(self):
-        bar_h = 12
+        bar_h = 14
         pygame.draw.rect(self.screen, (28, 30, 45), (0, bar_h, SCREEN_WIDTH, 35))
-        ratio = min(1.0, self.player.exp / self.player.exp_to_next)
+        ratio = min(1.0, self.player.exp / self.player.exp_to_next) if self.player.exp_to_next > 0 else 0
         pygame.draw.rect(self.screen, (20, 20, 30), (0, 0, SCREEN_WIDTH, bar_h))
         pygame.draw.rect(self.screen, COLOR_EXP, (0, 0, int(SCREEN_WIDTH * ratio), bar_h))
 
@@ -388,11 +921,18 @@ class Game:
 
         mins = self.timer_seconds // 60
         secs = self.timer_seconds % 60
-        time_txt = self.font.render(f"TIME: {mins:02d}:{secs:02d}", True, COLOR_WHITE)
+        total = self.current_stage.duration
+        time_txt = self.font.render(f"TIME: {mins:02d}:{secs:02d} / {total // 60:02d}:{total % 60:02d}",
+                                    True, COLOR_WHITE)
         self.screen.blit(time_txt, (SCREEN_WIDTH // 2 - time_txt.get_width() // 2, bar_h + 10))
 
         kill_txt = self.font.render(f"KILLS: {self.kill_count}", True, (240, 90, 90))
         self.screen.blit(kill_txt, (SCREEN_WIDTH - kill_txt.get_width() - 15, bar_h + 10))
+
+        stage_txt = self.small_font.render(self.current_stage.name.split(":")[0].upper(), True, (190, 200, 220))
+        self.screen.blit(stage_txt, (15 + lvl_txt.get_width() + 18, bar_h + 13))
+        if self.boss and self.boss.hp > 0:
+            self.draw_boss_bar()
 
         for index, (kind, level) in enumerate(self.player.weapons.levels.items()):
             x = 15 + index*190
@@ -407,6 +947,195 @@ class Game:
             self.screen.blit(label, (SCREEN_WIDTH-165, 66))
             label = self.small_font.render("RATE +25% / MOVE +15%", True, COLOR_GOLD)
             self.screen.blit(label, (SCREEN_WIDTH-240, 96))
+
+    def draw_boss_bar(self):
+        if isinstance(self.boss, Hydra):
+            self.draw_hydra_bars()
+            return
+        w, h, y = 520, 16, SCREEN_HEIGHT - 46
+        x = SCREEN_WIDTH // 2 - w // 2
+        ratio = max(0, self.boss.hp / self.boss.max_hp)
+        pygame.draw.rect(self.screen, (20, 20, 30), (x - 3, y - 3, w + 6, h + 6), border_radius=4)
+        pygame.draw.rect(self.screen, (70, 25, 30), (x, y, w, h))
+        pygame.draw.rect(self.screen, (60, 190, 100), (x, y, int(w * ratio), h))
+        label = self.small_font.render(self.current_stage.boss_name, True, COLOR_GOLD)
+        box = pygame.Rect(0, 0, label.get_width() + 16, label.get_height() + 6)
+        box.midbottom = (SCREEN_WIDTH // 2, y - 4)
+        pygame.draw.rect(self.screen, (20, 20, 30), box, border_radius=4)
+        self.screen.blit(label, (box.x + 8, box.y + 3))
+
+    def draw_hydra_bars(self):
+        width, gap, y = 176, 10, SCREEN_HEIGHT - 42
+        start = (SCREEN_WIDTH - (3 * width + 2 * gap)) // 2
+        label = self.small_font.render(self.current_stage.boss_name, True, COLOR_GOLD)
+        label_rect = label.get_rect(midbottom=(SCREEN_WIDTH // 2, y - 25))
+        pygame.draw.rect(self.screen, (15, 20, 35), label_rect.inflate(14, 6), border_radius=4)
+        self.screen.blit(label, label_rect)
+        for index, head in enumerate(self.boss.heads):
+            x = start + index * (width + gap)
+            pygame.draw.rect(self.screen, (15, 20, 35), (x - 3, y - 22, width + 6, 43), border_radius=4)
+            pygame.draw.rect(self.screen, (65, 30, 45), (x, y, width, 15))
+            pygame.draw.rect(self.screen, AI_COLORS[head.kind],
+                             (x, y, round(width * max(0, head.hp) / head.max_hp), 15))
+            name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini"}[head.kind]
+            status = f"{name} {max(0, round(head.hp))}/{head.max_hp}" if head.hp > 0 else name + " DESTROYED"
+            text = self.small_font.render(status, True, AI_COLORS[head.kind] if head.hp > 0 else (155, 155, 170))
+            self.screen.blit(text, (x + 3, y - 18))
+
+    def draw_debug_world(self):
+        """Spatial-hash grid (occupied cells shaded), hit circles, flow field and boss state."""
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        if self.obstacles.rects:
+            self.flow.draw(overlay, self.camera_x, self.camera_y)
+            for rect in self.obstacles.rects:
+                pygame.draw.rect(overlay, (255, 60, 60, 200), rect.move(-self.camera_x, -self.camera_y), 2)
+        cs = CELL_SIZE
+        counts = {}
+        for e in self.enemies:
+            if e.hp > 0:
+                for cx in range(int((e.x - e.radius) // cs), int((e.x + e.radius) // cs) + 1):
+                    for cy in range(int((e.y - e.radius) // cs), int((e.y + e.radius) // cs) + 1):
+                        counts[(cx, cy)] = counts.get((cx, cy), 0) + 1
+        if self.collision_mode == "hash":
+            for (cx, cy), n in counts.items():
+                rect = (cx * cs - self.camera_x, cy * cs - self.camera_y, cs, cs)
+                pygame.draw.rect(overlay, (255, 140, 0, min(90, 10 + n * 18)), rect)
+            x0 = int(self.camera_x // cs) * cs
+            for x in range(x0, int(self.camera_x) + SCREEN_WIDTH + cs, cs):
+                pygame.draw.line(overlay, (40, 60, 120, 90), (x - self.camera_x, 0), (x - self.camera_x, SCREEN_HEIGHT))
+            y0 = int(self.camera_y // cs) * cs
+            for y in range(y0, int(self.camera_y) + SCREEN_HEIGHT + cs, cs):
+                pygame.draw.line(overlay, (40, 60, 120, 90), (0, y - self.camera_y), (SCREEN_WIDTH, y - self.camera_y))
+        for e in self.enemies:
+            if e.hp > 0:
+                pygame.draw.circle(overlay, (255, 40, 40, 170), (e.x - self.camera_x, e.y - self.camera_y), e.radius, 1)
+                if isinstance(e, Hydra):
+                    for head in e.living_heads:
+                        pygame.draw.circle(overlay, (*AI_COLORS[head.kind], 210),
+                                           (head.x - self.camera_x, head.y - self.camera_y), head.radius, 2)
+        self.screen.blit(overlay, (0, 0))
+        if self.boss and self.boss.hp > 0 and self.boss.brain:
+            label = self.font.render(self.boss.brain.state, True, (255, 80, 80))
+            pos = (self.boss.x - self.camera_x - label.get_width() // 2, self.boss.y - self.camera_y - self.boss.radius - 34)
+            pygame.draw.rect(self.screen, (10, 10, 20), label.get_rect(topleft=pos).inflate(10, 4))
+            self.screen.blit(label, pos)
+
+    def draw_debug_panel(self):
+        n = getattr(self, "pair_n", 0)
+        checks = self.pair_stats.checks if self.pair_stats else 0
+        rows = [
+            ("DEBUG [F3]", COLOR_GOLD),
+            (f"FPS {self.clock.get_fps():5.1f}   frame {self.frame_ms:5.1f} ms", COLOR_WHITE),
+            (f"enemies {n}   shots {len(self.enemy_shots)}   proj {len(self.player.weapons.projectiles)}", COLOR_WHITE),
+            (f"collision [F2]: {self.collision_mode.upper()}", (120, 220, 255)),
+            (f"pair checks {checks:,}   (n^2/2 = {n * (n - 1) // 2:,})", (120, 220, 255)),
+            (f"separation {self.separation_ms:6.2f} ms", (120, 220, 255)),
+            (f"flow field BFS: {len(self.flow.dist)} cells, {self.flow.last_build_ms:.2f} ms/rebuild, rebuilds {self.flow.rebuilds}"
+             if self.obstacles.rects else "flow field: off (no obstacles in this stage)", (150, 170, 255)),
+            ("[F5] spawn 300 enemies   [F4] invincible: " + ("ON" if self.demo_mode else "off"),
+             (255, 200, 80) if self.demo_mode else (180, 180, 190)),
+        ]
+        if self.boss and self.boss.hp > 0 and self.boss.brain:
+            brain = self.boss.brain
+            rows.append((f"boss FSM: {brain.state} ({brain.timer:.1f}s)" + ("  ENRAGED" if brain.enraged(self.boss) else ""), (255, 120, 120)))
+            rows.append((" > ".join(brain.history[-5:]), (200, 150, 150)))
+        w, h = 430, 22 + len(rows) * 19 + 70
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((10, 10, 20, 215))
+        for i, (text, color) in enumerate(rows):
+            panel.blit(self.small_font.render(text, True, color), (12, 10 + i * 19))
+        # Separation time graph (last 180 frames); the red line marks one 60 FPS frame.
+        gx, gy, gw, gh = 12, h - 62, w - 24, 52
+        pygame.draw.rect(panel, (30, 30, 45), (gx, gy, gw, gh))
+        scale = max(17.0, max(self.sep_history, default=0)) / gh
+        pygame.draw.line(panel, (200, 60, 60), (gx, gy + gh - 16.7 / scale), (gx + gw, gy + gh - 16.7 / scale))
+        for i, v in enumerate(self.sep_history[-gw:]):
+            pygame.draw.line(panel, (120, 220, 255), (gx + i, gy + gh), (gx + i, gy + gh - min(gh, v / scale)))
+        self.screen.blit(panel, (15, 100))
+
+    HAND_PICK_SECONDS = 0.6
+    HAND_RESTART_SECONDS = 1.2
+
+    def update_hand_menus(self, dt):
+        """Hand gestures for screens that pause gameplay.
+
+        Level-up: move the hand left/middle/right to point at a card, hold a fist
+        to choose it. Game over / victory: hold a fist to restart.
+        """
+        hand = self.hand
+        if self.state != GameState.PLAYING or hand.status != "tracking" or not hand.landmarks:
+            self.hand_pick_index, self.hand_hold = None, 0.0
+            return
+        if not hand.fist:
+            self.hand_hold, self.hand_armed = 0.0, True
+        if self.is_level_up and self.current_upgrades:
+            count = len(self.current_upgrades)
+            x = hand.landmarks[8][0]          # index fingertip
+            if not hand.fist:   # pointing chooses the card; the fist only confirms
+                self.hand_pick_index = max(0, min(count - 1, int(x * count)))
+            if hand.fist and self.hand_armed and self.hand_pick_index is not None:
+                self.hand_hold += dt
+                if self.hand_hold >= self.HAND_PICK_SECONDS:
+                    self.hand_hold, self.hand_armed = 0.0, False
+                    self.apply_upgrade(self.current_upgrades[min(self.hand_pick_index, count - 1)])
+        elif self.is_game_over or self.is_victory:
+            self.hand_pick_index = None
+            if hand.fist and self.hand_armed:
+                self.hand_hold += dt
+                if self.hand_hold >= self.HAND_RESTART_SECONDS:
+                    self.hand_hold, self.hand_armed = 0.0, False
+                    self.reset_game()
+        else:
+            self.hand_pick_index, self.hand_hold = None, 0.0
+
+    def draw_hand_panel(self):
+        """Camera preview with hand landmarks and the pointing arrow."""
+        hand = self.hand
+        if hand.status == "off":
+            return
+        w, h = 192, 144
+        x, y = 15, SCREEN_HEIGHT - h - 40
+        pygame.draw.rect(self.screen, (10, 10, 20), (x - 4, y - 4, w + 8, h + 34), border_radius=6)
+        preview = hand.preview
+        if preview is not None and preview.shape[1] == w:
+            surf = pygame.image.frombuffer(preview.tobytes(), (w, h), "RGB")
+            self.screen.blit(surf, (x, y))
+        else:
+            pygame.draw.rect(self.screen, (30, 30, 45), (x, y, w, h))
+        points = hand.landmarks
+        if points:
+            pts = [(x + px * w, y + py * h) for px, py in points]
+            for a, b in ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10),
+                         (10, 11), (11, 12), (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (0, 17),
+                         (17, 18), (18, 19), (19, 20)):
+                pygame.draw.line(self.screen, (90, 230, 140), pts[a], pts[b], 2)
+            for p in pts:
+                pygame.draw.circle(self.screen, (255, 90, 90), p, 2)
+            dx, dy = hand.direction
+            if dx or dy:
+                tip = pts[8]
+                pygame.draw.line(self.screen, COLOR_GOLD, tip, (tip[0] + dx * 45, tip[1] + dy * 45), 4)
+                pygame.draw.circle(self.screen, COLOR_GOLD, (tip[0] + dx * 45, tip[1] + dy * 45), 5)
+        tracking_label = {"point": "HAND: pointing - walk", "fist": "HAND: fist - stop",
+                          "open": "HAND: point a finger to walk"}.get(hand.gesture, "HAND: tracking")
+        label = {"loading": "HAND: loading...", "tracking": tracking_label,
+                 "no hand": "HAND: show your hand", "error": "HAND: " + hand.error}.get(hand.status, hand.status)
+        colour = (255, 120, 120) if hand.status == "error" else COLOR_WHITE
+        self.screen.blit(self.small_font.render(label[:34], True, colour), (x, y + h + 4))
+        fps = self.small_font.render(f"{hand.fps:.0f} fps  [F7] camera off", True, (170, 170, 185))
+        self.screen.blit(fps, (x, y + h + 18))
+
+    def draw_banner(self):
+        if self.banner_remaining <= 0:
+            return
+        alpha = min(1.0, self.banner_remaining / 0.6)
+        text = self.title_font.render(self.banner_text, True, COLOR_GOLD)
+        text.set_alpha(int(255 * alpha))
+        band = pygame.Surface((SCREEN_WIDTH, text.get_height() + 30), pygame.SRCALPHA)
+        band.fill((10, 10, 20, int(170 * alpha)))
+        y = SCREEN_HEIGHT // 3
+        self.screen.blit(band, (0, y - 15))
+        self.screen.blit(text, (SCREEN_WIDTH // 2 - text.get_width() // 2, y))
 
     def draw_wrapped_text(self, text, font, color, max_width, start_x, start_y, line_spacing=18):
         words = text.split(" ")
@@ -428,6 +1157,14 @@ class Game:
             self.screen.blit(line_surf, (start_x - line_surf.get_width() // 2, y))
             y += line_spacing
 
+    def draw_hand_hold_bar(self, rect, seconds):
+        if self.hand_hold <= 0:
+            return
+        ratio = min(1.0, self.hand_hold / seconds)
+        bar = pygame.Rect(rect.x + 20, rect.bottom + 12, rect.width - 40, 10)
+        pygame.draw.rect(self.screen, (30, 30, 45), bar, border_radius=4)
+        pygame.draw.rect(self.screen, COLOR_GOLD, (bar.x, bar.y, int(bar.width * ratio), bar.height), border_radius=4)
+
     def draw_level_up_modal(self):
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((12, 10, 22, 210))
@@ -442,7 +1179,7 @@ class Game:
         mouse_pos = pygame.mouse.get_pos()
 
         for idx, (upg, rect) in enumerate(zip(self.current_upgrades, self.upgrade_rects)):
-            is_hover = rect.collidepoint(mouse_pos)
+            is_hover = rect.collidepoint(mouse_pos) or idx == self.hand_pick_index
 
             frame_img = self.card_frame_hover if (is_hover and self.card_frame_hover) else self.card_frame
             if frame_img:
@@ -457,12 +1194,13 @@ class Game:
             if upg["id"] in WEAPONS:
                 draw_icon(self.screen, upg["id"], (rect.centerx, rect.y+100), 32)
             else:
-                pygame.draw.line(self.screen, COLOR_HP_GREEN, (rect.centerx-15, rect.y+100), (rect.centerx+15, rect.y+100), 7)
-                pygame.draw.line(self.screen, COLOR_HP_GREEN, (rect.centerx, rect.y+85), (rect.centerx, rect.y+115), 7)
+                self.draw_passive_icon(upg["id"], rect.centerx, rect.y + 100)
 
             desc_surf = self.font.render(upg["desc"], True, COLOR_HP_GREEN)
             self.screen.blit(desc_surf, (rect.centerx - desc_surf.get_width() // 2, rect.y + 162))
 
+            if idx == self.hand_pick_index:
+                self.draw_hand_hold_bar(rect, self.HAND_PICK_SECONDS)
             self.draw_wrapped_text(
                 text=upg["detail"],
                 font=self.small_font,
@@ -473,7 +1211,121 @@ class Game:
                 line_spacing=18
             )
 
+    def draw_passive_icon(self, card_id, cx, cy):
+        if card_id == "vitality":        # red heart
+            pygame.draw.circle(self.screen, (220, 60, 70), (cx - 9, cy - 6), 11)
+            pygame.draw.circle(self.screen, (220, 60, 70), (cx + 9, cy - 6), 11)
+            pygame.draw.polygon(self.screen, (220, 60, 70), [(cx - 20, cy - 2), (cx + 20, cy - 2), (cx, cy + 20)])
+        elif card_id == "sneakers":      # shoe with speed lines
+            pygame.draw.rect(self.screen, (80, 150, 230), (cx - 14, cy - 12, 14, 18), border_radius=4)
+            pygame.draw.rect(self.screen, (80, 150, 230), (cx - 14, cy, 32, 10), border_radius=5)
+            pygame.draw.rect(self.screen, COLOR_WHITE, (cx - 14, cy + 8, 32, 4))
+            for i in range(3):
+                pygame.draw.line(self.screen, (200, 200, 210), (cx - 30, cy - 8 + i * 7), (cx - 20, cy - 8 + i * 7), 2)
+        elif card_id == "magnet":        # horseshoe magnet
+            pygame.draw.arc(self.screen, (210, 50, 50), (cx - 18, cy - 16, 36, 36), 3.14, 6.28, 9)
+            pygame.draw.rect(self.screen, (210, 50, 50), (cx - 18, cy - 20, 9, 22))
+            pygame.draw.rect(self.screen, (210, 50, 50), (cx + 9, cy - 20, 9, 22))
+            pygame.draw.rect(self.screen, (220, 220, 230), (cx - 18, cy - 26, 9, 7))
+            pygame.draw.rect(self.screen, (220, 220, 230), (cx + 9, cy - 26, 9, 7))
+        else:                            # green plus (Study Break)
+            pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx - 15, cy), (cx + 15, cy), 7)
+            pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx, cy - 15), (cx, cy + 15), 7)
+
+    def draw_main_menu(self):
+        if self.menu_bg:
+            self.screen.blit(self.menu_bg, (0, 0))
+        else:
+            self.draw_background()
+            title = self.title_font.render("COMSCI SURVIVOR", True, COLOR_GOLD)
+            self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 180))
+        self.btn_start.draw(self.screen)
+        self.btn_quit.draw(self.screen)
+
+    def build_stage_preview(self, index):
+        """Ground tiles of a stage with its enemies standing on them (card artwork)."""
+        stage = STAGES[index]()
+        size = (200, 96)
+        preview = pygame.Surface(size)
+        if stage.decorated:      # decorated stages draw their ground from generated tiles
+            tile = (build_ai_tiles() if stage.scenery_theme == "ai" else build_tiles())[0][0]
+        else:
+            tile = load_sprite(stage.ground_tile_name, (64, 64))
+        if tile is None:
+            preview.fill((40, 40, 60))
+        else:
+            for x in range(0, size[0], tile.get_width()):
+                for y in range(0, size[1], tile.get_height()):
+                    preview.blit(tile, (x, y))
+        names = STAGE_PREVIEW_ENEMIES[index] if index < len(STAGE_PREVIEW_ENEMIES) else ()
+        sprites = [self.enemy_sprites.get(name) for name in names]
+        sprites = [sprite for sprite in sprites if sprite]
+        sprites = [pygame.transform.smoothscale(
+                       sprite, (max(1, round(sprite.get_width() * 48 / sprite.get_height())), 48))
+                   if sprite.get_height() > 48 else sprite for sprite in sprites]
+        x = (size[0] - sum(sprite.get_width() + 8 for sprite in sprites) + 8) // 2
+        for sprite in sprites:
+            preview.blit(sprite, (x, (size[1] - sprite.get_height()) // 2))
+            x += sprite.get_width() + 8
+        pygame.draw.rect(preview, (15, 15, 25), preview.get_rect(), width=3)
+        return preview
+
+    def draw_stage_select(self):
+        if self.menu_bg:
+            self.screen.blit(self.menu_bg, (0, 0))
+        else:
+            self.draw_background()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((12, 10, 22, 225))     # dark enough to hide the logo in the artwork
+        self.screen.blit(overlay, (0, 0))
+        title = self.title_font.render("SELECT STAGE", True, COLOR_GOLD)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 80))
+        subtitle = self.font.render("Click a stage or press [1 / 2 / 3]", True, COLOR_WHITE)
+        self.screen.blit(subtitle, (SCREEN_WIDTH // 2 - subtitle.get_width() // 2, 135))
+
+        mouse_pos = pygame.mouse.get_pos()
+        for index, rect in enumerate(self.stage_card_rects):
+            stage = STAGES[index]()
+            hover = rect.collidepoint(mouse_pos)
+            frame = self.card_frame_hover if (hover and self.card_frame_hover) else self.card_frame
+            if frame:
+                self.screen.blit(frame, rect.topleft)
+            else:
+                pygame.draw.rect(self.screen, COLOR_CARD_BG, rect, border_radius=12)
+                pygame.draw.rect(self.screen, COLOR_GOLD if hover else COLOR_CARD_BORDER, rect,
+                                 width=3, border_radius=12)
+            number, _, place = stage.name.partition(":")
+            head = self.font.render(number.upper(), True, COLOR_GOLD if hover else COLOR_WHITE)
+            self.screen.blit(head, (rect.centerx - head.get_width() // 2, rect.y + 22))
+            self.draw_wrapped_text(place.strip(), self.small_font, (200, 200, 210), 200,
+                                   rect.centerx, rect.y + 56, 18)
+            self.screen.blit(self.stage_previews[index], (rect.centerx - 100, rect.y + 96))
+            boss = f"BOSS: {stage.boss_name}" if stage.boss_type else "NO BOSS"
+            self.draw_wrapped_text(boss, self.small_font, (255, 130, 110), 200,
+                                   rect.centerx, rect.y + 206, 18)
+            minutes, seconds = divmod(stage.duration, 60)
+            goal = self.small_font.render(f"SURVIVE {minutes}:{seconds:02d}", True, COLOR_HP_GREEN)
+            self.screen.blit(goal, (rect.centerx - goal.get_width() // 2, rect.y + 256))
+        self.btn_stage_back.draw(self.screen)
+
+    def draw_pause_menu(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+        title = self.title_font.render("GAME PAUSED", True, COLOR_WHITE)
+        self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 150))
+        for button in (self.btn_resume, self.btn_restart, self.btn_main_menu):
+            button.draw(self.screen)
+
     def render(self):
+        if self.state == GameState.MAIN_MENU:
+            self.draw_main_menu()
+            pygame.display.flip()
+            return
+        if self.state == GameState.STAGE_SELECT:
+            self.draw_stage_select()
+            pygame.display.flip()
+            return
         self.draw_background()
         self.supplies.draw(self.screen, self.camera_x, self.camera_y, self.small_font, self.player)
 
@@ -481,12 +1333,39 @@ class Game:
             g.draw(self.screen, self.camera_x, self.camera_y)
         for coffee in self.coffees:
             coffee.draw(self.screen, self.camera_x, self.camera_y)
-        for e in self.enemies:
-            e.draw(self.screen, self.camera_x, self.camera_y)
+        if self.boss and self.boss.hp > 0:
+            if isinstance(self.boss, Hydra):
+                self.boss.draw_telegraph(self.screen, self.camera_x, self.camera_y)
+            else:
+                draw_boss_telegraph(self.screen, self.boss, self.camera_x, self.camera_y)
+        for enemy in self.enemies:
+            if enemy.enemy_type in AI_STATS:
+                draw_ai_warning(self.screen, enemy, self.camera_x, self.camera_y)
 
+        # Depth sorting: whatever stands lower on screen is drawn in front,
+        # so characters walk behind and in front of desks correctly.
+        view = pygame.Rect(self.camera_x - 120, self.camera_y - 120, SCREEN_WIDTH + 240, SCREEN_HEIGHT + 240)
+        drawables = [(e.feet_y, 1, e) for e in self.enemies if view.collidepoint(e.x, e.y)]
+        player_feet = self.player.y + (self.player.sprite.get_height() / 2 if self.player.sprite else self.player.radius)
+        drawables.append((player_feet, 2, self.player))
+        if self.scenery:
+            drawables += [(p.sort_y, 0, p) for p in self.scenery.visible(self.camera_x, self.camera_y, SCREEN_WIDTH, SCREEN_HEIGHT) if p.solid]
+        drawables.sort(key=lambda d: (d[0], d[1]))
+        for _, _, thing in drawables:
+            thing.draw(self.screen, self.camera_x, self.camera_y)
+
+        for shot in self.enemy_shots:
+            shot.draw(self.screen, self.camera_x, self.camera_y)
         self.player.weapons.draw(self.screen, self.player, self.camera_x, self.camera_y)
-        self.player.draw(self.screen, self.camera_x, self.camera_y)
+        self.effects.draw(self.screen, self.camera_x, self.camera_y, self.small_font)
+        if self.scenery:
+            self.scenery.draw_ambience(self.screen, self.last_dt)
+        if self.show_debug:
+            self.draw_debug_world()
         self.draw_hud()
+        if self.show_debug:
+            self.draw_debug_panel()
+        self.draw_banner()
 
         if self.is_level_up:
             self.draw_level_up_modal()
@@ -498,25 +1377,88 @@ class Game:
             self.screen.blit(over_txt, (SCREEN_WIDTH // 2 - over_txt.get_width() // 2, 250))
             restart_txt = self.font.render("Press [ R ] to Restart | Press [ ESC ] to Quit", True, COLOR_GOLD)
             self.screen.blit(restart_txt, (SCREEN_WIDTH // 2 - restart_txt.get_width() // 2, 330))
+        elif self.is_victory:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((10, 35, 20, 200))
+            self.screen.blit(overlay, (0, 0))
+            lines = [(self.title_font, self.current_stage.victory_text, COLOR_GOLD, 230),
+                     (self.font, f"Time {self.timer_seconds // 60:02d}:{self.timer_seconds % 60:02d}"
+                                 f"   Kills {self.kill_count}   Level {self.player.level}", COLOR_WHITE, 300),
+                     (self.font, "Press [ R ] to Play Again | [ ESC ] for Main Menu", COLOR_GOLD, 350)]
+            for font, text, color, y in lines:
+                surf = font.render(text, True, color)
+                self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
+            self.btn_victory_menu.draw(self.screen)
 
+        if self.hand.status != "off":
+            if (self.is_game_over or self.is_victory) and self.hand_hold > 0:
+                self.draw_hand_hold_bar(pygame.Rect(SCREEN_WIDTH // 2 - 150, 380, 300, 0), self.HAND_RESTART_SECONDS)
+            self.draw_hand_panel()
+        if self.state == GameState.PAUSED:
+            self.draw_pause_menu()
         pygame.display.flip()
 
     def run(self):
         while self.is_running:
             dt = self.clock.tick(FPS)/1000.0
-            was_paused = self.is_level_up or self.is_game_over
+            was_paused = (self.is_level_up or self.is_game_over or self.is_victory
+                          or self.state != GameState.PLAYING)
             self.handle_events()
             # Do not charge the last modal frame to active gameplay.
+            started = time.perf_counter()
+            self.update_hand_menus(dt)
             if not was_paused:
                 self.update(dt)
+                self.sep_history = (self.sep_history + [self.separation_ms])[-400:]
             self.render()
+            self.frame_ms = (time.perf_counter() - started) * 1000
+        self.hand.stop()
         pygame.quit()
         sys.exit()
 
 
+def start_at_stage2(game):
+    """Debug/practice: jump to Stage 2 with a loadout similar to clearing Stage 1."""
+    player = game.player
+    player.level = 12
+    player.weapons.levels = {"enter": 4, "book": 3, "lan": 3}
+    game.selected_stage = 1
+    game.start_stage(1)
+
+
+def start_at_stage3(game):
+    """Practice the data center with a fully upgraded, three-weapon loadout."""
+    player = game.player
+    player.level = 20
+    player.exp = player.pending_level_ups = 0
+    player.exp_to_next = 5
+    for _ in range(player.level - 1):
+        player.exp_to_next = int(player.exp_to_next * 1.35) + 3
+    player.weapons.levels = {"enter": 5, "book": 5, "lan": 5}
+    game.selected_stage = 2
+    game.start_stage(2)
+
+
+def create_game(argv=None):
+    """Build the Game from command-line flags (used by main() and the tests).
+
+    python main.py             opens the main menu.
+    python main.py --stage 2   skips the menu and starts at the Accounting Faculty.
+    python main.py --stage 3   skips the menu and starts at the data center.
+    """
+    argv = sys.argv if argv is None else argv
+    has_stage_flag = "--stage" in argv
+    stage = argv[argv.index("--stage") + 1:][:1] if has_stage_flag else []
+    game = Game(start_in_menu=not has_stage_flag)
+    if stage == ["2"]:
+        start_at_stage2(game)
+    elif stage == ["3"]:
+        start_at_stage3(game)
+    return game
+
+
 def main():
-    game = Game()
-    game.run()
+    create_game().run()
 
 
 if __name__ == "__main__":

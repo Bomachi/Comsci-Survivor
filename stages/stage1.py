@@ -5,9 +5,9 @@ class Stage1(BaseStage):
     def __init__(self):
         super().__init__(
             name="Stage 1: Ancient Cemetery",
-            target_time_seconds=180,
             ground_tile_name="stage1_tile.png"
         )
+        self.victory_text = "ANCIENT CEMETERY CLEARED!"
 
     def get_enemy_spawn_type(self, elapsed_seconds: int) -> str:
         if elapsed_seconds < 60:
