@@ -67,8 +67,9 @@ class Button:
         self.image = pygame.transform.scale(image, self.rect.size) if image else None
         self.hover_overlay = None
         if self.image:
-            self.hover_overlay = pygame.Surface(self.rect.size, pygame.SRCALPHA)
-            self.hover_overlay.fill((255, 255, 255, 45))
+            # Highlight only the opaque pixels, so rounded corners and glows stay clean.
+            mask = pygame.mask.from_surface(self.image)
+            self.hover_overlay = mask.to_surface(setcolor=(255, 255, 255, 45), unsetcolor=(0, 0, 0, 0))
 
     def update(self, mouse_pos):
         self.is_hovered = self.rect.collidepoint(mouse_pos)
@@ -445,9 +446,13 @@ class Game:
 
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
+        # Frame made for the stage-select cards (falls back to the level-up frame if missing).
+        self.stage_card = load_sprite("stage_card.png", (240, 300))
+        self.stage_card_hover = load_sprite("stage_card_hover.png", (240, 300))
 
         # Main menu and pause menu.
         self.menu_bg = load_sprite("main_menu_background.jpg", (SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.stage_bg = load_sprite("stage_select_background.jpg", (SCREEN_WIDTH, SCREEN_HEIGHT))
         button_x = SCREEN_WIDTH // 2 - 110
         def make_button(y, text, image_name):
             return Button(button_x, y, 220, 60, text, self.font, image=load_sprite(image_name, (220, 60)))
@@ -456,7 +461,7 @@ class Game:
         self.btn_resume = make_button(250, "RESUME", "resume_button.png")
         self.btn_restart = make_button(330, "RESTART", "restart_button.png")
         self.btn_main_menu = make_button(410, "MAIN MENU", "main_menu_button.png")
-        self.btn_stage_back = make_button(610, "MAIN MENU", "main_menu_button.png")
+        self.btn_stage_back = make_button(580, "MAIN MENU", "main_menu_button.png")
         self.btn_victory_menu = make_button(430, "MAIN MENU", "main_menu_button.png")
 
         # Stage-select cards use the same frame art as the level-up cards.
@@ -1271,13 +1276,10 @@ class Game:
         return preview
 
     def draw_stage_select(self):
-        if self.menu_bg:
-            self.screen.blit(self.menu_bg, (0, 0))
+        if self.stage_bg:
+            self.screen.blit(self.stage_bg, (0, 0))
         else:
-            self.draw_background()
-        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((12, 10, 22, 225))     # dark enough to hide the logo in the artwork
-        self.screen.blit(overlay, (0, 0))
+            self.screen.fill((18, 22, 41))
         title = self.title_font.render("SELECT STAGE", True, COLOR_GOLD)
         self.screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 80))
         subtitle = self.font.render("Click a stage or press [1 / 2 / 3]", True, COLOR_WHITE)
@@ -1287,7 +1289,9 @@ class Game:
         for index, rect in enumerate(self.stage_card_rects):
             stage = STAGES[index]()
             hover = rect.collidepoint(mouse_pos)
-            frame = self.card_frame_hover if (hover and self.card_frame_hover) else self.card_frame
+            card, card_hover = ((self.stage_card, self.stage_card_hover) if self.stage_card
+                                else (self.card_frame, self.card_frame_hover))
+            frame = card_hover if (hover and card_hover) else card
             if frame:
                 self.screen.blit(frame, rect.topleft)
             else:
@@ -1295,17 +1299,17 @@ class Game:
                 pygame.draw.rect(self.screen, COLOR_GOLD if hover else COLOR_CARD_BORDER, rect,
                                  width=3, border_radius=12)
             number, _, place = stage.name.partition(":")
-            head = self.font.render(number.upper(), True, COLOR_GOLD if hover else COLOR_WHITE)
+            head = self.font.render(number.upper(), True, (255, 226, 120) if hover else (240, 240, 232))
             self.screen.blit(head, (rect.centerx - head.get_width() // 2, rect.y + 22))
-            self.draw_wrapped_text(place.strip(), self.small_font, (200, 200, 210), 200,
+            self.draw_wrapped_text(place.strip(), self.small_font, (205, 210, 198), 200,
                                    rect.centerx, rect.y + 56, 18)
             self.screen.blit(self.stage_previews[index], (rect.centerx - 100, rect.y + 96))
             boss = f"BOSS: {stage.boss_name}" if stage.boss_type else "NO BOSS"
-            self.draw_wrapped_text(boss, self.small_font, (255, 130, 110), 200,
-                                   rect.centerx, rect.y + 206, 18)
+            self.draw_wrapped_text(boss, self.small_font, (255, 150, 140), 200,
+                                   rect.centerx, rect.y + 212, 18)
             minutes, seconds = divmod(stage.duration, 60)
-            goal = self.small_font.render(f"SURVIVE {minutes}:{seconds:02d}", True, COLOR_HP_GREEN)
-            self.screen.blit(goal, (rect.centerx - goal.get_width() // 2, rect.y + 256))
+            goal = self.small_font.render(f"SURVIVE {minutes}:{seconds:02d}", True, (150, 230, 150))
+            self.screen.blit(goal, (rect.centerx - goal.get_width() // 2, rect.y + 261))
         self.btn_stage_back.draw(self.screen)
 
     def draw_pause_menu(self):
