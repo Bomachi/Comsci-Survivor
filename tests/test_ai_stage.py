@@ -188,6 +188,7 @@ class AIStageIntegrationTests(unittest.TestCase):
         random.seed(11)
         self.game.demo_mode = False
         self.game.show_debug = False
+        self.game.selected_stage = 0       # a previous test may have chosen another stage
         self.game.reset_game()
 
     def test_killing_the_stage2_boss_does_not_end_the_stage(self):
@@ -269,7 +270,7 @@ class AIStageIntegrationTests(unittest.TestCase):
         game.update(0.1)
         self.assertEqual(before, (game.elapsed_seconds, boss.brain.timer, shot.x, shot.life))
         game.reset_game()
-        self.assertEqual(game.stage_index, 0)
+        self.assertEqual(game.stage_index, 2)      # restart replays the stage that was chosen
         self.assertIsNone(game.boss)
         self.assertFalse(game.enemy_shots)
 
