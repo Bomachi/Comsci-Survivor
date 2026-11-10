@@ -167,7 +167,12 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
 - `weapons.py`: weapon catalog, loadout limits, combat, projectiles and effects.
   Use `player.weapons.upgrade(id)` to enforce slot/level limits.
 - `upgrades.py`: eligible cards and upgrade application.
-- `main.py`: pickups, player/enemy updates, game loop and UI.
+- `main.py`: the `Game` class - game loop, stages, spawning, combat and pickups.
+- `entities.py`: `Player`, `Enemy`, `Gem` and `Coffee`.
+- `ui.py`: `GameState`, `Button`, main menu, stage select and pause menu.
+- `hud.py`: HUD, boss bars, level-up cards, game over and victory screens.
+- `debug_view.py`: the F3 debug overlay. `hand_ui.py`: hand-control menus and camera preview.
+- `settings.py`: window size, FPS and colours. `resources.py`: image loading.
 - `supplies.py`: map crate placement, continuous opening timer and healing food.
 - `item_art.py`: loads artwork relative to the project, preserves aspect ratio,
   and caches scaled images and rotations. Replace the corresponding PNG in

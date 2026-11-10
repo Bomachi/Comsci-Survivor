@@ -1,30 +1,38 @@
+"""Comsci Survivor - entry point and the Game class (game loop, stages, spawning, combat).
+
+Where the rest lives:
+    settings.py    window size, FPS, colours
+    resources.py   image loading
+    entities.py    Player, Enemy, Gem, Coffee
+    ui.py          GameState, Button, main menu / stage select / pause menu
+    hud.py         HUD, boss bars, level-up cards, game over / victory screens
+    debug_view.py  F3 debug overlay
+    hand_ui.py     hand-control menus and camera preview
+"""
 import os
 import sys
 import math
 import random
+import time
 import pygame
 
-from settings import (BASE_DIR, SCREEN_WIDTH, SCREEN_HEIGHT, FPS, COLOR_WHITE, COLOR_HP_GREEN,
-                      COLOR_HP_RED, COLOR_EXP, COLOR_GOLD, COLOR_CARD_BG, COLOR_CARD_BORDER)
+from settings import BASE_DIR, SCREEN_WIDTH, SCREEN_HEIGHT, FPS
 from resources import load_sprite, load_ai_sprite
-from entities import Player, Enemy, Gem, Coffee, draw_coffee
-from ui import GameState, Button, MenuMixin
+from entities import Player, Enemy, Gem, Coffee
+from ui import GameState, Button, MenuMixin   # Button is re-exported for the tests
 from hud import HudMixin
 from debug_view import DebugMixin
 from hand_ui import HandMenuMixin
 from stages import STAGES
-from upgrades import available_upgrades, apply_upgrade, level_up_choices, apply_choice
-from weapons import WeaponSystem, WEAPONS, draw_icon
-from item_art import draw_item
+from upgrades import level_up_choices, apply_choice
 from supplies import Supplies, Food
 from accounting import update_ranged, update_boss, draw_boss_telegraph
-from ai_enemies import AI_STATS, AI_COLORS, Hydra, configure_ai, update_ai, draw_ai_warning
-from spatial import separate, CELL_SIZE
+from ai_enemies import AI_STATS, AI_COLORS, Hydra, update_ai, draw_ai_warning
+from spatial import separate
 from pathfinding import ObstacleMap, FlowField
-from animation import Animator, Effects
-from stage_art import Scenery, build_tiles, build_ai_tiles
+from animation import Effects
+from stage_art import Scenery
 from hand_control import HandController
-import time
 
 
 class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
@@ -35,6 +43,31 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
         pygame.display.set_caption("Comsci Survivor")
         self.clock = pygame.time.Clock()
 
+        self.load_fonts()
+        self.load_sprites()
+
+        # Debug overlay (F3) and collision strategy (F2) for demos/benchmarks.
+        self.show_debug = False
+        self.collision_mode = "hash"
+        self.demo_mode = False  # F4: invincible; automatic weapons stay active
+        self.frame_ms = 0.0
+        self.sep_history = []
+        self.effects = Effects()
+        self.hand = HandController()
+        self.hand_pick_index = None    # card under the hand during level-up
+        self.hand_hold = 0.0           # seconds the fist has been held
+        self.hand_armed = True         # must open the hand again between picks
+        self.obstacles = ObstacleMap()
+        self.flow = FlowField(self.obstacles)
+        self.scenery = None
+        self.player_vel = (0.0, 0.0)
+        self.last_dt = 1 / FPS
+        self.flow_ms = 0.0
+
+        self.init_menus(start_in_menu)
+        self.reset_game()
+
+    def load_fonts(self):
         font_path = os.path.join(BASE_DIR, "assets", "fonts", "Minecraft.ttf")
         if os.path.exists(font_path):
             self.font = pygame.font.Font(font_path, 18)
@@ -45,6 +78,7 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
             self.small_font = pygame.font.SysFont("tahoma", 13)
             self.title_font = pygame.font.SysFont("tahoma", 36)
 
+    def load_sprites(self):
         self.stage1_tile = load_sprite("stage1_tile.png", (64, 64))
         self.player_sprite = load_sprite("player.png", (48, 48))
         self.TA_sprite = load_sprite("TA.png", (36, 36))
@@ -66,30 +100,8 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
         self.hydra_head_sprites = {kind: load_ai_sprite("head_" + kind + ".png", (46, 46))
                                    for kind in AI_COLORS}
         self.stage_tiles = {"stage1_tile.png": self.stage1_tile}
-
-        # Debug overlay (F3) and collision strategy (F2) for demos/benchmarks.
-        self.show_debug = False
-        self.collision_mode = "hash"
-        self.demo_mode = False  # F4: invincible; automatic weapons stay active
-        self.frame_ms = 0.0
-        self.sep_history = []
-        self.effects = Effects()
-        self.hand = HandController()
-        self.hand_pick_index = None    # card under the hand during level-up
-        self.hand_hold = 0.0           # seconds the fist has been held
-        self.hand_armed = True         # must open the hand again between picks
-        self.obstacles = ObstacleMap()
-        self.flow = FlowField(self.obstacles)
-        self.scenery = None
-        self.player_vel = (0.0, 0.0)
-        self.last_dt = 1 / FPS
-        self.flow_ms = 0.0
-
         self.card_frame = load_sprite("card_frame.png", (240, 300))
         self.card_frame_hover = load_sprite("card_frame_hover.png", (240, 300))
-        self.init_menus(start_in_menu)
-
-        self.reset_game()
 
     def stage_tile(self):
         name = self.current_stage.ground_tile_name
@@ -326,16 +338,38 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
                     break
 
     def update(self, dt=1/FPS):
+        """One simulation step. Each part of the frame has its own method below."""
         if self.state != GameState.PLAYING or self.is_game_over or self.is_level_up or self.is_victory:
             return
         # A stalled window must not jump the simulation several seconds ahead.
         dt = min(max(dt, 0), 0.1)
+        self.update_timers(dt)
+        moved = self.update_player(dt)
+        self.update_camera(dt)
+        self.update_spawning(dt)
+        self.update_enemies(dt)
+        self.separate_enemies()
+        self.update_weapons(dt)
+        self.update_hit_feedback(dt)
+        self.resolve_kills()
+        if self.update_stage_progress():
+            return
+        if self.update_player_damage(dt):
+            return      # the player died this frame
+        self.update_pickups(dt, moved)
+        if self.player.pending_level_ups > 0:
+            self.trigger_level_up()
+
+    def update_timers(self, dt):
         self.elapsed_seconds += dt
         self.timer_seconds = int(self.elapsed_seconds)
         self.banner_remaining = max(0, self.banner_remaining - dt)
         self.player.coffee_remaining = max(0, self.player.coffee_remaining-dt)
         self.player.hurt_remaining = max(0, self.player.hurt_remaining-dt)
         self.last_dt = dt
+
+    def update_player(self, dt):
+        """Move the player (keyboard or hand), then rebuild the flow field. True if they moved."""
         previous_position = (self.player.x, self.player.y)
         if self.hand.status != "off":
             self.player.handle_input(dt, self.hand.poll())
@@ -351,10 +385,14 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
             started = time.perf_counter()
             self.flow.update(self.player.x, self.player.y)
             self.flow_ms = (time.perf_counter() - started) * 1000
+        return moved
 
+    def update_camera(self, dt):
         smoothing = 1 - 0.9 ** (dt*60)
         self.camera_x += (self.player.x - SCREEN_WIDTH//2 - self.camera_x)*smoothing
         self.camera_y += (self.player.y - SCREEN_HEIGHT//2 - self.camera_y)*smoothing
+
+    def update_spawning(self, dt):
         self.spawn_timer += dt
         interval = self.current_stage.spawn_interval * (1.6 if self.boss and self.boss.hp > 0 else 1)
         if self.spawn_timer >= interval:
@@ -362,6 +400,8 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
                 self.spawn_enemy()
             self.spawn_timer %= interval
 
+    def update_enemies(self, dt):
+        """Move every living enemy with the behaviour that matches its type."""
         for enemy in self.enemies:
             if enemy.hp > 0:
                 if enemy.is_boss:
@@ -377,7 +417,9 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
                 enemy.update(self.player.x, self.player.y, dt, self.steer_for(enemy))
                 if enemy.shoot_cooldown:
                     update_ranged(enemy, self.player, dt, self.enemy_shots, self.player_vel)
-        # Crowd separation: naive O(n^2) or spatial hash (toggle with F2).
+
+    def separate_enemies(self):
+        """Crowd separation: naive O(n^2) or spatial hash (toggle with F2)."""
         living = [e for e in self.enemies if e.hp > 0]
         started = time.perf_counter()
         self.pair_stats = separate(living, self.collision_mode)
@@ -386,10 +428,14 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
         if self.obstacles.rects:
             for enemy in living:
                 self.obstacles.push_out(enemy)
+
+    def update_weapons(self, dt):
         self.player.weapons.update(dt, self.player, self.combat_targets())
         if isinstance(self.boss, Hydra):
             self.obstacles.push_out(self.boss)
-        # Hit feedback: flash + damage number whenever an enemy lost HP.
+
+    def update_hit_feedback(self, dt):
+        """Flash + damage number whenever an enemy lost HP."""
         for enemy in self.enemies:
             enemy.anim.update(enemy.x, enemy.y, dt)
             if isinstance(enemy, Hydra):
@@ -401,7 +447,9 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
                                     (255, 120, 90) if enemy.is_boss else (255, 240, 200))
             enemy.prev_hp = enemy.hp
         self.effects.update(dt)
-        # Resolve kills before contact damage; each enemy drops loot once.
+
+    def resolve_kills(self):
+        """Remove dead enemies before contact damage; each enemy drops loot once."""
         for enemy in self.enemies[:]:
             if enemy.hp <= 0:
                 self.effects.burst(enemy.x, enemy.y, enemy.sprite, 40 if enemy.is_boss else 10)
@@ -415,8 +463,9 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
                     self.coffees.append(Coffee(enemy.x, enemy.y))
                 self.kill_count += 1
                 self.enemies.remove(enemy)
-        if self.update_stage_progress():
-            return
+
+    def update_player_damage(self, dt):
+        """Enemy shots and contact damage. Returns True if the player died."""
         for shot in self.enemy_shots:
             shot.update(dt)
         if self.demo_mode:
@@ -435,9 +484,12 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
                                     damage, (255, 70, 70))
                 if self.player.hp <= 0:
                     self.is_game_over = True
-                    return
+                    return True
         self.enemy_shots = [shot for shot in self.enemy_shots if shot.life > 0]
+        return False
 
+    def update_pickups(self, dt, moved):
+        """Food, coffee and EXP gems."""
         self.supplies.update(dt, self.player, moved)
         for coffee in self.coffees[:]:
             coffee.life -= dt
@@ -454,8 +506,6 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
             if math.hypot(gem.x-self.player.x, gem.y-self.player.y) < self.player.radius+gem.radius:
                 self.player.add_exp(gem.value)
                 self.gems.remove(gem)
-        if self.player.pending_level_ups > 0:
-            self.trigger_level_up()
 
     def draw_background(self):
         if self.scenery:
@@ -480,12 +530,15 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
     def render(self):
         if self.state == GameState.MAIN_MENU:
             self.draw_main_menu()
-            pygame.display.flip()
-            return
-        if self.state == GameState.STAGE_SELECT:
+        elif self.state == GameState.STAGE_SELECT:
             self.draw_stage_select()
-            pygame.display.flip()
-            return
+        else:
+            self.draw_world()
+            self.draw_interface()
+        pygame.display.flip()
+
+    def draw_world(self):
+        """Everything that lives in world coordinates: ground, pickups, characters, shots."""
         self.draw_background()
         self.supplies.draw(self.screen, self.camera_x, self.camera_y, self.small_font, self.player)
 
@@ -520,6 +573,9 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
         self.effects.draw(self.screen, self.camera_x, self.camera_y, self.small_font)
         if self.scenery:
             self.scenery.draw_ambience(self.screen, self.last_dt)
+
+    def draw_interface(self):
+        """Everything drawn on top of the world: HUD, debug, pop-up screens, pause menu."""
         if self.show_debug:
             self.draw_debug_world()
         self.draw_hud()
@@ -530,25 +586,9 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
         if self.is_level_up:
             self.draw_level_up_modal()
         elif self.is_game_over:
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((40, 10, 15, 200))
-            self.screen.blit(overlay, (0, 0))
-            over_txt = self.title_font.render("GAME OVER", True, (255, 70, 70))
-            self.screen.blit(over_txt, (SCREEN_WIDTH // 2 - over_txt.get_width() // 2, 250))
-            restart_txt = self.font.render("Press [ R ] to Restart | Press [ ESC ] to Quit", True, COLOR_GOLD)
-            self.screen.blit(restart_txt, (SCREEN_WIDTH // 2 - restart_txt.get_width() // 2, 330))
+            self.draw_game_over_screen()
         elif self.is_victory:
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((10, 35, 20, 200))
-            self.screen.blit(overlay, (0, 0))
-            lines = [(self.title_font, self.current_stage.victory_text, COLOR_GOLD, 230),
-                     (self.font, f"Time {self.timer_seconds // 60:02d}:{self.timer_seconds % 60:02d}"
-                                 f"   Kills {self.kill_count}   Level {self.player.level}", COLOR_WHITE, 300),
-                     (self.font, "Press [ R ] to Play Again | [ ESC ] for Main Menu", COLOR_GOLD, 350)]
-            for font, text, color, y in lines:
-                surf = font.render(text, True, color)
-                self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
-            self.btn_victory_menu.draw(self.screen)
+            self.draw_victory_screen()
 
         if self.hand.status != "off":
             if (self.is_game_over or self.is_victory) and self.hand_hold > 0:
@@ -556,7 +596,6 @@ class Game(MenuMixin, HudMixin, DebugMixin, HandMenuMixin):
             self.draw_hand_panel()
         if self.state == GameState.PAUSED:
             self.draw_pause_menu()
-        pygame.display.flip()
 
     def run(self):
         while self.is_running:

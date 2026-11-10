@@ -182,3 +182,25 @@ class HudMixin:
         else:                            # green plus (Study Break)
             pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx - 15, cy), (cx + 15, cy), 7)
             pygame.draw.line(self.screen, COLOR_HP_GREEN, (cx, cy - 15), (cx, cy + 15), 7)
+
+    def draw_game_over_screen(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((40, 10, 15, 200))
+        self.screen.blit(overlay, (0, 0))
+        over_txt = self.title_font.render("GAME OVER", True, (255, 70, 70))
+        self.screen.blit(over_txt, (SCREEN_WIDTH // 2 - over_txt.get_width() // 2, 250))
+        restart_txt = self.font.render("Press [ R ] to Restart | Press [ ESC ] to Quit", True, COLOR_GOLD)
+        self.screen.blit(restart_txt, (SCREEN_WIDTH // 2 - restart_txt.get_width() // 2, 330))
+
+    def draw_victory_screen(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((10, 35, 20, 200))
+        self.screen.blit(overlay, (0, 0))
+        lines = [(self.title_font, self.current_stage.victory_text, COLOR_GOLD, 230),
+                 (self.font, f"Time {self.timer_seconds // 60:02d}:{self.timer_seconds % 60:02d}"
+                             f"   Kills {self.kill_count}   Level {self.player.level}", COLOR_WHITE, 300),
+                 (self.font, "Press [ R ] to Play Again | [ ESC ] for Main Menu", COLOR_GOLD, 350)]
+        for font, text, color, y in lines:
+            surf = font.render(text, True, color)
+            self.screen.blit(surf, (SCREEN_WIDTH // 2 - surf.get_width() // 2, y))
+        self.btn_victory_menu.draw(self.screen)
