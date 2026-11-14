@@ -18,7 +18,7 @@ card with the mouse or **1 / 2 / 3**. Press **R** after defeat to restart, or
 
 | Stage | Length | Enemies |
 | --- | --- | --- |
-| 1: Ancient Cemetery | 3 minutes, then Stage 2 | TA, professor, rector |
+| 1: Science Faculty | 3 minutes, then Stage 2 | TA, professor, rector |
 | 2: Accounting Faculty / ด่านบุกคณะบัญชี | Boss at 2:30, beat it to enter Stage 3 | Accounting students and the Chief Auditor |
 | 3: AI Data Center / ศูนย์ข้อมูล AI | Boss at 3:00, destroy all three heads to win | ChatGPT robots, Claude Code creatures, Gemini robots and the AI Overlord Hydra |
 
