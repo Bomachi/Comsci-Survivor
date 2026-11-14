@@ -4,10 +4,10 @@ from stages.base_stage import BaseStage
 class Stage1(BaseStage):
     def __init__(self):
         super().__init__(
-            name="Stage 1: Ancient Cemetery",
+            name="Stage 1: Science Faculty",
             ground_tile_name="stage1_tile.png"
         )
-        self.victory_text = "ANCIENT CEMETERY CLEARED!"
+        self.victory_text = "SCIENCE FACULTY CLEARED!"
 
     def get_enemy_spawn_type(self, elapsed_seconds: int) -> str:
         if elapsed_seconds < 60:
