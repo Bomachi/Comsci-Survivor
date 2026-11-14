@@ -4,26 +4,51 @@ A Pygame survival game for our university team project.
 
 ## Run
 
+Windows (PowerShell):
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 ```
 
-Move with **WASD / arrow keys**. Weapons attack automatically. Pick a level-up
-card with the mouse or **1 / 2 / 3**. Press **R** after defeat to restart, or
-**Esc** to quit.
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py
+```
+
+The game opens on the **main menu**. **Start game** shows the stage-select
+screen: click a stage card or press **1 / 2 / 3** to play it (**Esc** goes back).
+
+| Key | Effect |
+| --- | --- |
+| **WASD / arrow keys** | Move. Weapons attack automatically |
+| **1 / 2 / 3** or mouse | Pick a level-up card |
+| **Esc** while playing | Pause menu: Resume, Restart (same stage) or Main menu |
+| **R** after defeat or victory | Play the same stage again |
+| **Esc** after defeat | Quit |
+| **Esc / Enter** or the button after victory | Back to the main menu |
 
 ## Stages
 
-| Stage | Length | Enemies |
-| --- | --- | --- |
-| 1: Science Faculty | 3 minutes, then Stage 2 | TA, professor, rector |
-| 2: Accounting Faculty / ด่านบุกคณะบัญชี | Boss at 2:30, beat it to enter Stage 3 | Accounting students and the Chief Auditor |
-| 3: AI Data Center / ศูนย์ข้อมูล AI | Boss at 3:00, destroy all three heads to win | ChatGPT robots, Claude Code creatures, Gemini robots and the AI Overlord Hydra |
+Every stage lasts **20 minutes**. All three can be chosen from the stage-select
+screen and each is a separate run that starts at level 1 with the Enter Key.
+A stage is cleared when its 20 minutes are up **and** its boss, if it has
+appeared, is defeated. Beating the boss early does not end the stage. Clearing a
+stage shows the victory screen and returns to the main menu; stages do not chain.
+The HUD shows the time as `TIME: 05:12 / 20:00`.
 
-Clearing Stage 1 keeps your level and weapons, restores 30 HP and clears the
-field. Stage 2 enemies give more EXP:
+| Stage | Boss | Enemies |
+| --- | --- | --- |
+| 1: Science Faculty | None | TAs in the first minute, TAs and professors in the second, rectors after 2:00 |
+| 2: Accounting Faculty / ด่านบุกคณะบัญชี | The Chief Auditor at 2:30 | Accounting students |
+| 3: AI Data Center / ศูนย์ข้อมูล AI | AI Overlord Hydra at 3:00 | ChatGPT robots, Claude Code creatures and Gemini robots |
+
+Stage 2 has desks, shelves and cabinets that block movement; enemies walk
+around them. Its enemies give more EXP:
 
 | Enemy | Behavior |
 | --- | --- |
@@ -38,8 +63,6 @@ Enter Key L4, Project Books L3, LAN Whip L3).
 
 ### Stage 3: AI Data Center
 
-Defeating the Chief Auditor keeps the same player, level, EXP and weapons,
-restores 30 HP (up to maximum), and clears enemies, shots and combat effects.
 Stage 3 has dark circuit floors, server racks and computer consoles. Its layout
 is deterministic, with open aisles and the existing flow-field pathfinding.
 
@@ -73,8 +96,8 @@ Destroyed heads disappear permanently and cannot attack or be targeted again.
 Severing a head interrupts its pending attack; shots already fired remain until
 they expire. The remaining heads' rest interval falls to **85%** with two heads
 and **70%** with one. Three separate named health bars show progress. Only the
-final defeat counts as one boss kill and drops boss loot; defeating all three
-heads wins the campaign.
+final defeat counts as one boss kill and drops boss loot. After all three heads
+are destroyed, survive until 20:00 to clear the stage.
 
 Practice directly with:
 
@@ -83,8 +106,9 @@ Practice directly with:
 ```
 
 This starts at level 20 with Enter Key L5, Project Books L5 and LAN Whip L5.
-Restart returns to Stage 1, as it does in Stage 2 practice. Keyboard and optional
-hand controls are unchanged.
+The `--stage` flag skips the main menu. Restart replays the same stage (at
+level 1), in Stage 2 practice too. Keyboard and optional hand controls are
+unchanged.
 
 New sprites live in `assets/sprites/ai/`. Characters, the hydra body and props
 were made with the built-in image generation tool using the supplied references;
@@ -96,7 +120,7 @@ ratios when loading them. Renderer previews: `docs/stage3_look.png` and
 ## Debug overlay and CS systems
 
 Press **F3** in game to show the debug overlay: FPS, frame time, collision pair
-checks, the spatial-hash grid, hit circles and the boss state machine.
+checks, the spatial-hash grid, hit circles, the flow field and the boss state machine.
 **F2** switches crowd separation between the spatial hash and the naive
 O(n²) method, **F4** toggles invincibility while automatic weapons keep firing,
 and **F5** adds 300 enemies for a stress test. Press F4 again to disable
@@ -121,15 +145,20 @@ model), then press **F7** in game.
 | Point with the index finger (other fingers folded) | Walk where the finger points |
 | Fist or open hand | Stand still |
 | Level-up: point at a card, then hold a fist 0.6 s | Pick that card |
-| Game over / victory: hold a fist 1.2 s | Restart |
+| Game over / victory: hold a fist 1.2 s | Restart the same stage |
 
-The keyboard always wins over hand input. Code: `hand_control.py`.
+The keyboard always wins over hand input. Gestures are ignored on the main
+menu, the stage-select screen and the pause menu. Code: `hand_control.py`
+(camera and gestures) and `hand_ui.py` (menus and camera preview).
 
 ## Weapons and items
 
 Start with Enter Key. Equip at most **three weapon types**, each upgradable to
-**level 5**. Once slots are full, cards only upgrade equipped weapons. At maximum
-levels, Study Break restores 25 HP so later level-ups still have a valid choice.
+**level 5**. Once slots are full, weapon cards only upgrade equipped weapons.
+A level-up always offers **three cards**: when fewer than three weapon upgrades
+are possible, passive cards fill the rest: Vitality (max HP +20 and heal 20),
+Sneakers (move speed +8%, up to +40%), Magnet (pickup range +30) and Study
+Break (recover 25 HP).
 
 | Weapon | Behavior | Upgrades |
 | --- | --- | --- |
@@ -152,8 +181,8 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   resets progress. Enemies keep attacking; the upgrade menu pauses the timer.
   A progress bar appears above the crate. Each crate opens once per run and drops
   food beside it. Walk over food to restore **30 HP**, capped at maximum HP.
-  Food stays on the ground when HP is full and does not expire or use a weapon
-  slot. Restart creates fresh crates and clears food. The user-supplied food image
+  Food is picked up even when HP is full, and does not expire or use a weapon
+  slot. Bosses also drop food. Restart creates fresh crates and clears food. The user-supplied food image
   is stored unchanged in `assets/sprites/items/food.png`.
 - Pickups use no weapon slots. Gameplay, coffee and combat timers pause while
   the upgrade menu is open. Restart clears the loadout and buffs.
@@ -166,7 +195,7 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
 
 - `weapons.py`: weapon catalog, loadout limits, combat, projectiles and effects.
   Use `player.weapons.upgrade(id)` to enforce slot/level limits.
-- `upgrades.py`: eligible cards and upgrade application.
+- `upgrades.py`: eligible weapon cards, passive cards and upgrade application.
 - `main.py`: the `Game` class - game loop, stages, spawning, combat and pickups.
 - `entities.py`: `Player`, `Enemy`, `Gem` and `Coffee`.
 - `ui.py`: `GameState`, `Button`, main menu, stage select and pause menu.
@@ -179,11 +208,13 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
   `assets/sprites/items/` and restart the game to change an icon.
 - All movement and combat timers use seconds (`dt`), with a 0.1-second clamp
   for long window stalls. Contact damage has a 0.75-second grace period.
-- Keep the same `Player` when adding stage transitions to preserve EXP, level
-  and weapon levels. Clear transient weapon projectiles/effects on transition.
-- `stages/`: each stage sets its spawn table, length, tile, spawn interval and
-  optional boss. `stages.STAGES` is the play order; `Game.start_stage()` moves
-  to a stage while keeping the player.
+- `stages/`: each stage sets its spawn table, tile, spawn interval and optional
+  boss. The length comes from `STAGE_DURATION_SECONDS` (20 minutes) in
+  `stages/base_stage.py`. `stages.STAGES` is the order of the cards on the
+  stage-select screen.
+- `Game.start_run(index)` begins a fresh run on the chosen stage and remembers it
+  in `selected_stage`, so Restart replays it. `Game.update_stage_progress()`
+  spawns the boss and decides when the stage is won.
 - `accounting.py`: enemy projectiles, ranged enemy fire and the Chief Auditor's
   attack pattern.
 - `ai_enemies.py`: AI projectiles, enemy attacks and the hydra's head targets,
@@ -200,11 +231,15 @@ levels, Study Break restores 25 HP so later level-ups still have a valid choice.
 
 Tests use SDL's dummy display/audio drivers and do not open a game window.
 
-Stage 3 tests cover campaign transitions, spawn phases, attack warnings and
-frame-rate consistency, all six weapons against independent heads, piercing,
-homing, AoE/knockback, severed-head interruption, pause/restart, boss loot,
-scenery and a full 185-second simulation.
+There are 125 tests. `test_ui_states.py` covers the main menu, stage select,
+pause menu, victory flow and restart; `test_stage_duration.py` covers the
+20-minute rule and the boss condition.
 
-Known pre-existing baseline failure: `test_healing_cap_full_health_and_distance`
-in `test_supplies.py` expects food to remain when HP is full, but the existing
-supply code consumes it. This is independent of Stage 3.
+Stage 3 tests cover spawn phases, attack warnings and frame-rate consistency,
+all six weapons against independent heads, piercing, homing, AoE/knockback,
+severed-head interruption, pause/restart, boss loot, scenery and a full-stage
+smoke simulation.
+
+Known failure: `test_healing_cap_full_health_and_distance` in
+`test_supplies.py` expects food to remain when HP is full, but the game now
+picks it up at full HP. The test has not been updated yet.
